@@ -9,6 +9,7 @@ __email__ = ["strazz@gmail.com"]
 from idautils import *
 from idc import *
 import idaapi
+import ida_segment
 import sys
 import string
 
@@ -80,7 +81,7 @@ def is_string_load(addr):
         return False
 
     # Validate that the string offset actually exists inside the binary
-    if idaapi.get_segm_name(GetOperandValue(addr, 1)) is None:
+    if get_segm_name(GetOperandValue(addr, 1)) is None:
         return False
 
     # Could be unk_, asc_, 'offset ', XXXXh, ignored ones are loc_ or inside []
@@ -107,22 +108,22 @@ def is_string_load(addr):
     return False
 
 def create_string(addr, string_len):
-    if idaapi.get_segm_name(addr) is None:
+    if get_segm_name(addr) is None:
         debug('Cannot load a string which has no segment - not creating string @ 0x%02x' % addr)
         return False
 
     debug('Found string load @ 0x%x with length of %d' % (addr, string_len))
     # This may be overly aggressive if we found the wrong area...
-    if GetStringType(addr) is not None and GetString(addr) is not None and len(GetString(addr)) != string_len:
+    if get_str_type(addr) is not None and GetString(addr) is not None and len(GetString(addr)) != string_len:
         debug('It appears that there is already a string present @ 0x%x' % addr)
         MakeUnknown(addr, string_len, DOUNK_SIMPLE)
 
-    if GetString(addr) is None and MakeStr(addr, addr + string_len):
+    if get_strlit_contents(addr) is None and create_strlit(addr, addr + string_len):
         return True
     else:
         # If something is already partially analyzed (incorrectly) we need to MakeUnknown it
         MakeUnknown(addr, string_len, DOUNK_SIMPLE)
-        if MakeStr(addr, addr + string_len):
+        if create_strlit(addr, addr + string_len):
             return True
         debug('Unable to make a string @ 0x%x with length of %d' % (addr, string_len))
 
@@ -160,8 +161,8 @@ def strings_init():
 
         while addr <= end_addr:
             if is_string_load(addr):
-                if 'rodata' not in idaapi.get_segm_name(addr) and 'text' not in idaapi.get_segm_name(addr):
-                    debug('Should a string be in the %s section?' % idaapi.get_segm_name(addr))
+                if 'rodata' not in get_segm_name(addr) and 'text' not in get_segm_name(addr):
+                    debug('Should a string be in the %s section?' % get_segm_name(addr))
                 string_addr = GetOperandValue(addr, 1)
                 addr_3 = FindCode(FindCode(addr, SEARCH_DOWN), SEARCH_DOWN)
                 string_len = GetOperandValue(addr_3, 1)
@@ -203,7 +204,7 @@ def get_gopclntab_seg():
 def _get_seg(possible_seg_names):
     seg = None
     for seg_name in possible_seg_names:
-        seg = idaapi.get_segm_by_name(seg_name)
+        seg = ida_segment.get_segm_by_name(seg_name)
         if seg:
             return seg
 
@@ -360,8 +361,10 @@ def renamer_init():
             addr += addr_size * 2
 
             func_name_addr = Dword(name_offset + gopclntab.startEA + addr_size) + gopclntab.startEA
-            func_name = GetString(func_name_addr)
-            MakeStr(func_name_addr, func_name_addr + len(func_name))
+            func_name = get_strlit_contents(func_name_addr)
+            #RemotePdb('127.0.0.1', 7777).set_trace()
+            # TODO: why does this flat out break?
+            #MakeStr(func_name_addr, func_name_addr + len(func_name))
             appended = clean_func_name = clean_function_name(func_name)
             debug('Going to remap function at 0x%x with %s - cleaned up as %s' % (func_offset, func_name, clean_func_name))
 
@@ -396,7 +399,7 @@ def pointer_renamer():
         # Look at data xrefs to the function - find the pointer that is located in .rodata
         data_ref = idaapi.get_first_dref_to(addr)
         while data_ref != BADADDR:
-            if 'rodata' in idaapi.get_segm_name(data_ref):
+            if 'rodata' in get_segm_name(data_ref):
                 # Only rename things that are currently listed as an offset; eg. off_9120B0
                 if 'off_' in GetTrueName(data_ref):
                     if MakeName(data_ref, ('%s_ptr' % name)):
