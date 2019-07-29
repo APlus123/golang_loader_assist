@@ -117,6 +117,11 @@ GO_BUILTIN_STRUCTS = [
     ]
 
 
+# list of typedata offset ranges (as a tuple) from
+# each moduledata entry in the order that they're found
+GO_TYPES_RANGES = list()
+
+
 def create_and_populate_struct(struct_name, struct_fields):
     existing_struct = ida_struct.get_struc_id(struct_name)
     if existing_struct != BADADDR:
@@ -159,6 +164,7 @@ def create_and_populate_struct(struct_name, struct_fields):
                 opinfo.ec.tid = existing_enum
                 opinfo.ec.serial = ida_enum.get_enum_idx(
                                         existing_enum)
+                #opinfo.tid = existing_enum
                 typeflags |= FF_0ENUM
             ida_struct.add_struc_member(
                     new_sptr, name, BADADDR,
@@ -170,14 +176,14 @@ GO_BUILTIN_BITFIELDS = {
     # bitfield_name: (width, values)
     'go_tflag': (1, { # type flags
         # value_name: (value, mask)
-        'Uncommon': (1, 0x1),
-        'ExtraStar': (2, 0x2),
-        'Named': (4, 0x4),
+        'tflagUncommon': (1, 0x01),
+        'tflagExtraStar': (2, 0x02),
+        'tflagNamed': (4, 0x04)
         }),
     'go_NameFlags': (1, { # name flags
-        'Exported': (1, 0x1),
-        'TagFollowsName': (2, 0x2),
-        'PkgPathFollowsNameAndTag': (4, 0x4),
+        'nameExported': (1, 0x1),
+        'nameTagFollowsName': (2, 0x2),
+        'namePkgPathFollowsTag': (4, 0x4),
         }),
     'go_typekind': (1, { # kind value + flags
         'kindBool': (1, 0x1f),
@@ -228,6 +234,7 @@ def populate_builtin_bitfields():
             continue
         new_bf_id = ida_enum.add_enum(BADADDR, bf_name, 0)
         ida_enum.set_enum_bf(new_bf_id, True)
+        ida_enum.set_enum_width(new_bf_id, bf_size)
         for name, (enum_val, bf_mask) in bf_values.items():
             ret = ida_enum.add_enum_member(new_bf_id, name,
                                            enum_val, bf_mask)
@@ -244,7 +251,8 @@ def find_runtime_newobject_fn():
 def rename_type_structs():
     runtime_newobject_fn = find_runtime_newobject_fn()
     if runtime_newobject_fn == BADADDR:
-        print 'Could not find runtime_newobject, not moving on'
+        print 'Could not find runtime_newobject, not moving on ' \
+                '(did you run golang_loader_assist.py beforehand?)'
         return 1
 
     for newobject_xref in XrefsTo(runtime_newobject_fn, 0):
@@ -318,6 +326,29 @@ def get_next_moduledata(ea):
             or BADADDR
 
 
+def create_go_type_struct(idx, types_ea):
+    go_type_name = 'go_type%d' % idx
+    types_opinfo = idaapi.opinfo_t()
+    types_opinfo.ri.base = types_ea
+    types_opinfo.ri.target = BADADDR
+    types_opinfo.ri.tdelta = 0
+    types_opinfo.ri.flags = ida_nalt.REF_OFF64
+    go_type_spec = [
+        ('size', 8, FF_QWORD|FF_DATA, None, None),
+        ('ptrdata', 8, FF_QWORD|FF_DATA, None, None),
+        ('hash', 4, FF_DWORD|FF_DATA, None, None),
+        ('tflag', 1, FF_BYTE|FF_DATA, None, 'go_tflag'),
+        ('align', 1, FF_BYTE|FF_DATA, None, None),
+        ('fieldalign', 1, FF_BYTE|FF_DATA, None, None),
+        ('kind', 1, FF_BYTE|FF_DATA, None, 'go_typekind'),
+        ('alg', 8, FF_QWORD|FF_DATA, None, None),
+        ('gcdata', 8, FF_QWORD|FF_DATA, None, None),
+        ('str', 4, FF_DWORD|FF_DATA|offflag(), types_opinfo, None),
+        ('ptrToThis', 4, FF_DWORD|FF_DATA|offflag(), types_opinfo, None)
+        ]
+    return create_and_populate_struct(go_type_name, go_type_spec)
+
+
 def main():
     print 'populating built-in bitfields...'
     populate_builtin_bitfields()
@@ -335,6 +366,10 @@ def main():
     if moduledata_struct_id != BADADDR:
         moduledata_size = ida_struct.get_struc_size(
                             ida_struct.get_struc(moduledata_struct_id))
+        types_struct_offset = ida_struct.get_member_by_fullname(
+                                    'go_runtime_moduledata.types')[0].soff
+        etypes_struct_offset = ida_struct.get_member_by_fullname(
+                                    'go_runtime_moduledata.etypes')[0].soff
 
         while moduledata_ea != BADADDR:
             print 'found moduledata at %x' % moduledata_ea
@@ -348,7 +383,20 @@ def main():
                 print 'ERROR: could not create moduledata struct at ' \
                         '%x' % moduledata_ea
                 return
+
+            types_offset = ida_bytes.get_qword(
+                    moduledata_ea + types_struct_offset)
+            etypes_offset = ida_bytes.get_qword(
+                    moduledata_ea + etypes_struct_offset)
+            GO_TYPES_RANGES.append( (types_offset,etypes_offset) )
             moduledata_ea = get_next_moduledata(moduledata_ea)
+
+    # create a different type struct for each moduledata types
+    # list, as the name and type offsets in the go_type struct
+    # rely on that particular offset
+    for idx, (types_start_ea, _) in enumerate(GO_TYPES_RANGES):
+        print 'Creating type struct (types offset: %x)' % types_start_ea
+        create_go_type_struct(idx, types_start_ea)
 
     #print 'renaming type structs...'
     #rename_type_structs()
