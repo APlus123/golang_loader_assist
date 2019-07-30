@@ -13,7 +13,7 @@ import ida_enum
 from ida_funcs import get_func
 from ida_name import get_name_ea, get_name
 from ida_ua import get_dtype_size
-from ida_bytes import get_byte
+from ida_bytes import get_byte, STRCONV_ESCAPE
 from idaapi import offflag, enum_flag
 import sys
 import string
@@ -55,6 +55,12 @@ GO_BUILTIN_STRUCTS = [
         # TODO: mapextra struct
         ('extra', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
             None)
+        ]),
+    ('go_name', [
+        ('flags', 1, FF_BYTE|FF_DATA, None, 'go_NameFlags'),
+        ('length_hi', 1, FF_BYTE|FF_DATA, None, None),
+        ('length_lo', 1, FF_BYTE|FF_DATA, None, None),
+        ('str', 0, FF_DATA|FF_STRLIT, idaapi.opinfo_t(), None)
         ]),
     ('go_runtime_bitvector', [
         ('n', 4, FF_DWORD|FF_DATA, None, None),
@@ -172,50 +178,66 @@ def create_and_populate_struct(struct_name, struct_fields):
                     struct_name_or_size)
 
 
+NAME_FLAGS = {
+    'exported': 1,
+    'tagFollowsName': 2,
+    'pkgPathFollowsTag': 4
+    }
+
+TYPE_TFLAGS = {
+    'uncommon': 1,
+    'extraStar': 2,
+    'named': 4
+    }
+
+TYPEKIND_VALS = {
+    # kind: (enum value, mask)
+    'kindBool': (1, 0x1f),
+    'kindInt': (2, 0x1f),
+    'kindInt8': (3, 0x1f),
+    'kindInt16': (4, 0x1f),
+    'kindInt32': (5, 0x1f),
+    'kindInt64': (6, 0x1f),
+    'kindUint': (7, 0x1f),
+    'kindUint8': (8, 0x1f),
+    'kindUint16': (9, 0x1f),
+    'kindUint32': (10, 0x1f),
+    'kindUint64': (11, 0x1f),
+    'kindUintptr': (12, 0x1f),
+    'kindFloat32': (13, 0x1f),
+    'kindFloat64': (14, 0x1f),
+    'kindComplex64': (15, 0x1f),
+    'kindComplex128': (16, 0x1f),
+    'kindArray': (17, 0x1f),
+    'kindChan': (18, 0x1f),
+    'kindFunc': (19, 0x1f),
+    'kindInterface': (20, 0x1f),
+    'kindMap': (21, 0x1f),
+    'kindPtr': (22, 0x1f),
+    'kindSlice': (23, 0x1f),
+    'kindString': (24, 0x1f),
+    'kindStruct': (25, 0x1f),
+    'kindUnsafePointer': (26, 0x1f),
+    'kindDirectIface': (0x20, 0x20),
+    'kindGCProg': (0x40, 0x40),
+    'kindNoPointers': (0x80, 0x80)
+    }
+
+
 GO_BUILTIN_BITFIELDS = {
     # bitfield_name: (width, values)
     'go_tflag': (1, { # type flags
         # value_name: (value, mask)
-        'tflagUncommon': (1, 0x01),
-        'tflagExtraStar': (2, 0x02),
-        'tflagNamed': (4, 0x04)
+        'tflagUncommon': (TYPE_TFLAGS['uncommon'], 0x01),
+        'tflagExtraStar': (TYPE_TFLAGS['extraStar'], 0x02),
+        'tflagNamed': (TYPE_TFLAGS['named'], 0x04)
         }),
     'go_NameFlags': (1, { # name flags
-        'nameExported': (1, 0x1),
-        'nameTagFollowsName': (2, 0x2),
-        'namePkgPathFollowsTag': (4, 0x4),
+        'nameExported': (NAME_FLAGS['exported'], 0x1),
+        'nameTagFollowsName': (NAME_FLAGS['tagFollowsName'], 0x2),
+        'namePkgPathFollowsTag': (NAME_FLAGS['pkgPathFollowsTag'], 0x4),
         }),
-    'go_typekind': (1, { # kind value + flags
-        'kindBool': (1, 0x1f),
-        'kindInt': (2, 0x1f),
-        'kindInt8': (3, 0x1f),
-        'kindInt16': (4, 0x1f),
-        'kindInt32': (5, 0x1f),
-        'kindInt64': (6, 0x1f),
-        'kindUint': (7, 0x1f),
-        'kindUint8': (8, 0x1f),
-        'kindUint16': (9, 0x1f),
-        'kindUint32': (10, 0x1f),
-        'kindUint64': (11, 0x1f),
-        'kindUintptr': (12, 0x1f),
-        'kindFloat32': (13, 0x1f),
-        'kindFloat64': (14, 0x1f),
-        'kindComplex64': (15, 0x1f),
-        'kindComplex128': (16, 0x1f),
-        'kindArray': (17, 0x1f),
-        'kindChan': (18, 0x1f),
-        'kindFunc': (19, 0x1f),
-        'kindInterface': (20, 0x1f),
-        'kindMap': (21, 0x1f),
-        'kindPtr': (22, 0x1f),
-        'kindSlice': (23, 0x1f),
-        'kindString': (24, 0x1f),
-        'kindStruct': (25, 0x1f),
-        'kindUnsafePointer': (26, 0x1f),
-        'kindDirectIface': (0x20, 0x20),
-        'kindGCProg': (0x40, 0x40),
-        'kindNoPointers': (0x80, 0x80)
-        }),
+    'go_typekind': (1, TYPEKIND_VALS),
     'go_maptype_flags': (1, {
         'IndirectKey': (1, 0x1),
         'IndirectElem': (2, 0x2),
@@ -304,9 +326,44 @@ def rename_type_structs():
                     break
             inst = DecodePreviousInstruction(inst.ea)
 
-        if go_type_addr != BADADDR:
+        if go_type_addr != BADADDR and not ida_bytes.is_struct(
+                                ida_bytes.get_flags(go_type_addr)):
             data_name = get_name(go_type_addr)
             print 'found go data type at %s' % data_name
+            type_struct = declare_and_parse_go_type(go_type_addr)
+            if type_struct != None:
+                success, type_name, type_tag, type_pkgdata = \
+                        create_name(go_type_addr, type_struct)
+                if success:
+                    print 'created go_name for %s' % type_name
+
+
+def declare_and_parse_go_type(ea):
+    # look at the offset for the str field
+    type_idx = -1
+    for idx, (md_soff, md_eoff) in enumerate(GO_TYPES_RANGES):
+        if ea >= md_soff and ea < md_eoff:
+            type_idx = idx
+    if type_idx == -1:
+        print 'ERROR: could not determine correct go_type struct ' \
+                'at 0x%x' % ea
+        return None
+
+    type_struct = ida_struct.get_struc(
+            ida_struct.get_struc_id('go_type%d' % type_idx))
+    type_struct_size = ida_struct.get_struc_size(type_struct)
+
+    if not ida_bytes.del_items(ea, 0, type_struct_size):
+        print 'ERROR: could not undefine bytes for go_type ' \
+                'at 0x%x' % ea
+        return None
+
+    if not ida_bytes.create_struct(ea, type_struct_size,
+                                   type_struct.id):
+        print 'ERROR: could not create go_type%d struct ' \
+                'at 0x%x' % (type_idx, ea)
+        return None
+    return type_struct
 
 
 def populate_builtin_structs():
@@ -324,6 +381,53 @@ def get_next_moduledata(ea):
                         'go_runtime_moduledata.next')[0]
     return ida_bytes.get_qword(ea + md_next_member.soff) \
             or BADADDR
+
+
+def create_name(type_ea, type_struct):
+    # declare a go_name type at 0x{type_ea} with metadata
+    # from type_struct (a go_type)
+    #
+    # return the following:
+    # (success, name value, tag value, pkgPath value)
+    tag_value = pkgPath_value = None
+
+    str_member = ida_struct.get_member_by_name(type_struct, 'str')
+    str_soff = str_member.soff
+    name_offset = ida_bytes.get_dword(type_ea + str_soff)
+
+    str_opinfo = idaapi.opinfo_t()
+    ida_struct.retrieve_member_info(str_opinfo, str_member)
+    types_base_ea = str_opinfo.ri.base
+
+    name_struct_id = ida_struct.get_struc_id('go_name')
+
+    name_ea = types_base_ea + name_offset
+    name_flags = get_byte(name_ea)
+
+    # (go_name.length_hi << 8) | go_name.length_lo
+    str_len = \
+            ((ida_bytes.get_byte(name_ea + 1) << 8) & 0xffff) | \
+             (ida_bytes.get_byte(name_ea + 2) & 0xffff)
+
+    str_value = ida_bytes.get_strlit_contents(name_ea+3, str_len, 0)
+
+    name_struct_len = 3 + str_len
+    print 'creating go_name of size %d at 0x%x' % \
+            (name_struct_len, name_ea)
+    if not ida_bytes.del_items(name_ea, 0, name_struct_len):
+        print 'ERROR: failed to undefine data for go_name ' \
+                'at 0x%x' % name_ea
+        return (False, None, None, None)
+    if not ida_bytes.create_struct(name_ea, name_struct_len,
+                                   name_struct_id):
+        print 'ERROR: failed to create go_name struct at ' \
+                '0x%x' % name_ea
+        return (False, None, None, None)
+
+    # TODO: tag + pkgPath
+
+    return (True, str_value, tag_value, pkgPath_value)
+
 
 
 def create_go_type_struct(idx, types_ea):
@@ -362,6 +466,8 @@ def main():
         print 'ERROR: could not find runtime.firstmoduledata...'
         return
 
+    # enumerate all moduledata structs in the data section
+    # starting with runtime.firstmoduledata
     moduledata_struct_id = ida_struct.get_struc_id('go_runtime_moduledata')
     if moduledata_struct_id != BADADDR:
         moduledata_size = ida_struct.get_struc_size(
@@ -372,16 +478,16 @@ def main():
                                     'go_runtime_moduledata.etypes')[0].soff
 
         while moduledata_ea != BADADDR:
-            print 'found moduledata at %x' % moduledata_ea
+            print 'found moduledata at 0x%x' % moduledata_ea
             if not ida_bytes.del_items(moduledata_ea, 0,
                                        moduledata_size):
                 print 'ERROR: could not undefine byte range for ' \
-                        'moduledata at %x' % moduledata_ea
+                        'moduledata at 0x%x' % moduledata_ea
                 return
             if not ida_bytes.create_struct(moduledata_ea, moduledata_size,
                                            moduledata_struct_id):
                 print 'ERROR: could not create moduledata struct at ' \
-                        '%x' % moduledata_ea
+                        '0x%x' % moduledata_ea
                 return
 
             types_offset = ida_bytes.get_qword(
@@ -391,15 +497,16 @@ def main():
             GO_TYPES_RANGES.append( (types_offset,etypes_offset) )
             moduledata_ea = get_next_moduledata(moduledata_ea)
 
-    # create a different type struct for each moduledata types
-    # list, as the name and type offsets in the go_type struct
-    # rely on that particular offset
+    # create a different type struct for each moduledata instance
+    # found in the rodata section ("go_type0", "go_type1", etc.).
+    # The name and type offsets in the go_type struct rely on that
+    # particular offset
     for idx, (types_start_ea, _) in enumerate(GO_TYPES_RANGES):
-        print 'Creating type struct (types offset: %x)' % types_start_ea
+        print 'Creating type struct (types offset: 0x%x)' % types_start_ea
         create_go_type_struct(idx, types_start_ea)
 
-    #print 'renaming type structs...'
-    #rename_type_structs()
+    print 'renaming type structs...'
+    rename_type_structs()
 
 
 
