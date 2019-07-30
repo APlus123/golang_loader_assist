@@ -266,6 +266,22 @@ def populate_builtin_bitfields():
                 break
 
 
+def get_struct_val(ea, fullname):
+    struct_member = ida_struct.get_member_by_fullname(fullname)[0]
+    member_type_flag = struct_member.flag & ida_bytes.DT_TYPE
+    type_ret_map = {
+        ida_bytes.FF_BYTE: ida_bytes.get_byte,
+        ida_bytes.FF_WORD: ida_bytes.get_word,
+        ida_bytes.FF_DWORD: ida_bytes.get_dword,
+        ida_bytes.FF_QWORD: ida_bytes.get_qword
+        }
+    if member_type_flag not in type_ret_map.keys():
+        # TODO: arrays and child structs
+        raise NotImplementedError(
+                'get_struct_val(%x)' % member_type_flag)
+    return type_ret_map[member_type_flag](ea + struct_member.soff)
+
+
 def find_runtime_newobject_fn():
     return get_name_ea(BADADDR, 'runtime_newobject')
 
@@ -410,6 +426,9 @@ def create_name(type_ea, type_struct):
              (ida_bytes.get_byte(name_ea + 2) & 0xffff)
 
     str_value = ida_bytes.get_strlit_contents(name_ea+3, str_len, 0)
+    if get_struct_val(type_ea, 'go_type0.tflag') \
+            & TYPE_TFLAGS['extraStar']:
+        str_value = str_value[1:]
 
     name_struct_len = 3 + str_len
     print 'creating go_name of size %d at 0x%x' % \
