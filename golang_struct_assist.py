@@ -11,7 +11,8 @@ import ida_segment
 import ida_nalt
 import ida_enum
 from ida_funcs import get_func
-from ida_name import get_name_ea, get_name
+from ida_name import get_name_ea, get_name, set_name, \
+        SN_PUBLIC, is_in_nlist
 from ida_ua import get_dtype_size
 from ida_bytes import get_byte, STRCONV_ESCAPE
 from idaapi import offflag, enum_flag
@@ -286,6 +287,32 @@ def find_runtime_newobject_fn():
     return get_name_ea(BADADDR, 'runtime_newobject')
 
 
+NAME_RE = re.compile(r'^(\[(?P<arrlen>[0-9]*)])?(?P<remain>.*)')
+NON_ALNUM = re.compile('[^a-zA-Z0-9]')
+
+def normalize_name(name, ea):
+    tkind = (get_struct_val(ea, 'go_type0.kind') & 0x1f)
+    normalized_name = ''
+    prefixes = {
+        TYPEKIND_VALS['kindPtr'][0]: 'ptr_',
+        TYPEKIND_VALS['kindArray'][0]: 'arr_',
+        TYPEKIND_VALS['kindSlice'][0]: 'slc_',
+        TYPEKIND_VALS['kindFunc'][0]: 'func_',
+        TYPEKIND_VALS['kindChan'][0]: 'chan_',
+        TYPEKIND_VALS['kindMap'][0]: 'map_',
+        TYPEKIND_VALS['kindStruct'][0]: 'stct_'
+        }
+    if tkind in prefixes.keys():
+        normalized_name += prefixes[tkind]
+    name_match = NAME_RE.match(name)
+    if name_match:
+        matches = name_match.groupdict()
+        if matches['arrlen']:
+            normalized_name += matches['arrlen']
+        normalized_name += '_' + NON_ALNUM.sub('_', matches['remain'])
+    return normalized_name
+
+
 def rename_type_structs():
     runtime_newobject_fn = find_runtime_newobject_fn()
     if runtime_newobject_fn == BADADDR:
@@ -350,8 +377,11 @@ def rename_type_structs():
             if type_struct != None:
                 success, type_name, type_tag, type_pkgdata = \
                         create_name(go_type_addr, type_struct)
-                if success:
+                if success and not is_in_nlist(go_type_addr):
                     print 'created go_name for %s' % type_name
+                    normalized_name = 'go_type__' + \
+                            normalize_name(type_name, go_type_addr)
+                    set_name(go_type_addr, normalized_name)
 
 
 def declare_and_parse_go_type(ea):
