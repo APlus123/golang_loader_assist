@@ -33,6 +33,7 @@ OFF_CURRENT_SEGMENT.ri.target = BADADDR
 OFF_CURRENT_SEGMENT.ri.flags = ida_nalt.REF_OFF64
 
 GO_BUILTIN_STRUCTS = [
+    # primitives
     ('go_string', [
         # (name, size(int) or struct name(str), typeflags, opinfo, enum)
         ('str', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT, None),
@@ -66,6 +67,63 @@ GO_BUILTIN_STRUCTS = [
     ('go_runtime_bitvector', [
         ('n', 4, FF_DWORD|FF_DATA, None, None),
         ('bytedata', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None)
+        ]),
+
+    # go_type metadata structs
+    #
+    # these are technically supposed to be represented
+    # as different types of go_type, however the decision
+    # was made to represent them as a separate struct that
+    # follows a go_type instead
+    ('go_type_metadata_map', [
+        ('key', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None),
+        ('elem', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None),
+        ('bucket', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None),
+        ('keysize', 1, FF_BYTE|FF_DATA, None, None),
+        ('elemsize', 1, FF_BYTE|FF_DATA, None, None),
+        ('bucketsize', 2, FF_WORD|FF_DATA, None, None),
+        ('flags', 4, FF_DWORD|FF_DATA, None, 'go_maptype_flags')
+        ]),
+    ('go_type_metadata_iface', [
+        ('pkgPath', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None),
+        ('mhdr', 'go_array', None, None, None)
+        ]),
+    ('go_type_metadata_ptr', [
+        ('_elem', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None)
+        ]),
+    ('go_type_metadata_func', [
+        ('inCount', 4, FF_DWORD|FF_DATA, None, None),
+        ('outCount', 4, FF_DWORD|FF_DATA, None, None)
+        ]),
+    # go_type_structfield is pointed to by go_type_metadata_struct
+    # as `fields`
+    ('go_type_structfield', [
+        ('name', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None),
+        ('typ', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None),
+        ('offsetAnon', 8, FF_QWORD|FF_DATA, None, None)
+        ]),
+    ('go_type_metadata_struct', [
+        ('pkgPath', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None),
+        ('fields', 'go_array', None, None, None)
+        ]),
+
+    ('go_itab', [
+        ('inter', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None),
+        ('_type', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None),
+        ('hash', 4, FF_DWORD, None, None),
+        ('_', 4, FF_DWORD|FF_DATA, None, None),
+        ('fun', 0, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
             None)
         ]),
     ('go_runtime_moduledata', [
@@ -313,7 +371,7 @@ def normalize_name(name, ea):
     return normalized_name
 
 
-def rename_type_structs():
+def map_type_structs():
     runtime_newobject_fn = find_runtime_newobject_fn()
     if runtime_newobject_fn == BADADDR:
         print 'Could not find runtime_newobject, not moving on ' \
@@ -379,9 +437,8 @@ def rename_type_structs():
                         create_name(go_type_addr, type_struct)
                 if success and not is_in_nlist(go_type_addr):
                     print 'created go_name for %s' % type_name
-                    normalized_name = 'go_type__' + \
-                            normalize_name(type_name, go_type_addr)
-                    set_name(go_type_addr, normalized_name)
+                    normalized_name = normalize_name(type_name, go_type_addr)
+                    set_name(go_type_addr, 'go_type__' + normalized_name)
 
 
 def declare_and_parse_go_type(ea):
@@ -395,8 +452,9 @@ def declare_and_parse_go_type(ea):
                 'at 0x%x' % ea
         return None
 
+    type_struct_name = 'go_type%d' % type_idx
     type_struct = ida_struct.get_struc(
-            ida_struct.get_struc_id('go_type%d' % type_idx))
+            ida_struct.get_struc_id(type_struct_name))
     type_struct_size = ida_struct.get_struc_size(type_struct)
 
     if not ida_bytes.del_items(ea, 0, type_struct_size):
@@ -409,7 +467,82 @@ def declare_and_parse_go_type(ea):
         print 'ERROR: could not create go_type%d struct ' \
                 'at 0x%x' % (type_idx, ea)
         return None
+
+    type_kind = (get_struct_val(ea, 'go_type0.kind') & 0x1f)
+    type_kind_id = -1
+    type_kind_size = 0
+    type_kind_name = None
+
+    # create metadata struct right after if it exists
+    type_kind_ea = ea + type_struct_size
+    if type_kind == TYPEKIND_VALS['kindFunc'][0]:
+        type_kind_name = 'go_type_metadata_func'
+    elif type_kind == TYPEKIND_VALS['kindMap'][0]:
+        type_kind_name = 'go_type_metadata_map'
+    elif type_kind == TYPEKIND_VALS['kindPtr'][0]:
+        type_kind_name = 'go_type_metadata_ptr'
+    elif type_kind == TYPEKIND_VALS['kindInterface'][0]:
+        pass
+        # TODO: figure out length of mhdr
+        #print 'adding go_type iface metadata at 0x%x' % type_kind_ea
+        #type_kind_id = ida_struct.get_struc_id('go_type_metadata_iface')
+    elif type_kind == TYPEKIND_VALS['kindStruct'][0]:
+        type_kind_name = 'go_type_metadata_struct'
+
+    if type_kind_name:
+        print 'adding %s at 0x%x' % (type_kind_name, type_kind_ea)
+        type_kind_id = ida_struct.get_struc_id(type_kind_name)
+        type_kind_sptr = ida_struct.get_struc(type_kind_id)
+        type_kind_size = ida_struct.get_struc_size(type_kind_sptr)
+        if type_kind_size <= 0:
+            print 'ERROR: could not determine %s struct size ' \
+                    'at 0x%x (%s)' % (type_kind_id, type_kind_ea)
+            return type_struct
+        print 'adding go_type struct metadata %s of %d bytes ' \
+                'at 0x%x' % (type_kind_name, type_kind_size, type_kind_ea)
+        ida_bytes.del_items(type_kind_ea, type_kind_size)
+        if not ida_bytes.create_struct(type_kind_ea, type_kind_size,
+                type_kind_id):
+            print 'ERROR: could not declare typekind %s struct at ' \
+                    '0x%x' % (type_kind_name, type_kind_ea)
+
+        # special cases where we might want more data
+        if type_kind_name == 'go_type_metadata_struct':
+            # create structfields, followed by a new
+            # IDA structure if it's a named type
+            fields_soff = ida_struct.get_member_by_fullname(
+                    'go_type_metadata_struct.fields')[0].soff
+            fields_ea = type_kind_ea + fields_soff
+            num_fields = get_struct_val(fields_ea, 'go_array.len')
+            print '%s at 0x%x has %d fields' % \
+                    (type_kind_name, fields_ea, num_fields)
+            if num_fields > 0:
+                fields_ptr_ea = get_struct_val(fields_ea,
+                                               'go_array.data')
+                print 'creating %d structfields at 0x%x' % \
+                        (num_fields, fields_ptr_ea)
+                field_list = create_structfields(fields_ptr_ea,
+                                                 num_fields)
+                # TODO: create struct from field_list
+
+
     return type_struct
+
+
+def create_structfields(ea, num_fields):
+    structfield_id = ida_struct.get_struc_id('go_type_structfield')
+    structfield_sptr = ida_struct.get_struc(structfield_id)
+    structfield_size = ida_struct.get_struc_size(structfield_sptr)
+
+    # TODO: iterate through structfields, get and return names + tags
+    fields = []
+    for i in range(0, num_fields):
+        fs_ea = ea + (i * structfield_size)
+        print 'creating structfield at 0x%x' % fs_ea
+        ida_bytes.del_items(fs_ea, structfield_size)
+        ida_bytes.create_struct(fs_ea, structfield_size,
+                                structfield_id)
+
 
 
 def populate_builtin_structs():
@@ -473,6 +606,8 @@ def create_name(type_ea, type_struct):
                 '0x%x' % name_ea
         return (False, None, None, None)
 
+    set_name(name_ea, 'go_name__' + normalize_name(str_value, type_ea))
+
     # TODO: tag + pkgPath
 
     return (True, str_value, tag_value, pkgPath_value)
@@ -502,6 +637,20 @@ def create_go_type_struct(idx, types_ea):
     return create_and_populate_struct(go_type_name, go_type_spec)
 
 
+def create_imethod_struct(idx, types_ea):
+    imethod_name = 'go_imethod%d' % idx
+    types_opinfo = idaapi.opinfo_t()
+    types_opinfo.ri.base = types_ea
+    types_opinfo.ri.target = BADADDR
+    types_opinfo.ri.tdelta = 0
+    types_opinfo.ri.flags = ida_nalt.REF_OFF64
+    go_imethod_spec = [
+        ('name', 4, FF_DWORD|FF_DATA|offflag(), types_opinfo, None),
+        ('ityp', 4, FF_DWORD|FF_DATA|offflag(), types_opinfo, None)
+        ]
+    return create_and_populate_struct(imethod_name, go_imethod_spec)
+
+
 def main():
     print 'populating built-in bitfields...'
     populate_builtin_bitfields()
@@ -515,7 +664,7 @@ def main():
         print 'ERROR: could not find runtime.firstmoduledata...'
         return
 
-    # enumerate all moduledata structs in the data section
+    # enumerate all moduledata structs in the noptrdata section
     # starting with runtime.firstmoduledata
     moduledata_struct_id = ida_struct.get_struc_id('go_runtime_moduledata')
     if moduledata_struct_id != BADADDR:
@@ -553,9 +702,10 @@ def main():
     for idx, (types_start_ea, _) in enumerate(GO_TYPES_RANGES):
         print 'Creating type struct (types offset: 0x%x)' % types_start_ea
         create_go_type_struct(idx, types_start_ea)
+        create_imethod_struct(idx, types_start_ea)
 
-    print 'renaming type structs...'
-    rename_type_structs()
+    print 'renaming and mapping out type structs...'
+    map_type_structs()
 
 
 
