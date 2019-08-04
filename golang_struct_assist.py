@@ -7,9 +7,10 @@ __email__ = ["root@127.0.0.1"]
 from idautils import *
 from idc import *
 import idaapi
-import ida_segment
-import ida_nalt
 import ida_enum
+import ida_nalt
+import ida_segment
+import ida_typeinf
 from ida_funcs import get_func
 from ida_name import get_name_ea, get_name, set_name, \
         SN_PUBLIC, is_in_nlist
@@ -26,6 +27,11 @@ import string
 # - x86_64 arch
 # - go1.11
 
+PTRSIZE = 8
+INTSIZE = 8
+FF_INT = (FF_QWORD if INTSIZE == 8 else FF_DWORD)
+FF_PTR = (FF_QWORD if PTRSIZE == 8 else FF_DWORD)
+
 # opinfo for offsets of the current segment
 OFF_CURRENT_SEGMENT = idaapi.opinfo_t()
 OFF_CURRENT_SEGMENT.ri.base = BADADDR
@@ -36,38 +42,72 @@ GO_BUILTIN_STRUCTS = [
     # primitives
     ('go_string', [
         # (name, size(int) or struct name(str), typeflags, opinfo, enum)
-        ('str', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT, None),
-        ('len', 8, FF_QWORD|FF_DATA, None, None)
+        ('str', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+                OFF_CURRENT_SEGMENT, None, None),
+        ('len', 8, FF_QWORD|FF_DATA, None, None, None)
         ]),
     ('go_array', [
-        ('data', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('len', 8, FF_QWORD|FF_DATA, None, None),
-        ('cap', 8, FF_QWORD|FF_DATA, None, None)
+        ('data', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None, None),
+        ('len', 8, FF_QWORD|FF_DATA, None, None, None),
+        ('cap', 8, FF_QWORD|FF_DATA, None, None, None)
         ]),
     ('go_hmap', [
-        ('count', 8, FF_QWORD|FF_DATA, None, None),
-        ('flags', 1, FF_BYTE|FF_DATA, None, 'go_maptype_flags'),
-        ('B', 1, FF_BYTE|FF_DATA, None, None),
-        ('noverflow', 2, FF_WORD|FF_DATA, None, None),
-        ('hash0', 4, FF_DWORD|FF_DATA, None, None),
-        ('buckets', 8, FF_QWORD|FF_DATA, OFF_CURRENT_SEGMENT, None),
-        ('oldbuckets', 8, FF_QWORD|FF_DATA, OFF_CURRENT_SEGMENT, None),
-        ('nevacuate', 8, FF_QWORD|FF_DATA, None, None),
+        ('count', 8, FF_QWORD|FF_DATA, None, None, None),
+        ('flags', 1, FF_BYTE|FF_DATA, None, 'go_maptype_flags', None),
+        ('B', 1, FF_BYTE|FF_DATA, None, None, None),
+        ('noverflow', 2, FF_WORD|FF_DATA, None, None, None),
+        ('hash0', 4, FF_DWORD|FF_DATA, None, None, None),
+        ('buckets', PTRSIZE, FF_QWORD|FF_DATA, OFF_CURRENT_SEGMENT,
+            None, None),
+        ('oldbuckets', PTRSIZE, FF_QWORD|FF_DATA, OFF_CURRENT_SEGMENT,
+            None, None),
+        ('nevacuate', 8, FF_QWORD|FF_DATA, None, None, None),
         # TODO: mapextra struct
-        ('extra', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None)
+        ('extra', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None, None)
+        ]),
+    ('go_waitq', [
+        ('first', PTRSIZE, FF_PTR|FF_DATA|offflag(),
+            OFF_CURRENT_SEGMENT, None, None),
+        ('last', PTRSIZE, FF_PTR|FF_DATA|offflag(),
+            OFF_CURRENT_SEGMENT, None, None)
+        ]),
+
+    # TODO: this is a placeholder. Find out what actually consists
+    # of an interface when embedded in a struct
+    ('go_interface', [ 
+        ('placeholder0', 8, FF_QWORD|FF_DATA, None, None, None),
+        ('placeholder1', 8, FF_QWORD|FF_DATA, None, None, None)
+        ]),
+    ('go_mutex', [
+        ('key', PTRSIZE, FF_PTR|FF_DATA, None, None, None)
+        ]),
+    ('go_hchan', [
+        ('qcount', INTSIZE, FF_INT|FF_DATA, None, None, None),
+        ('dataqsiz', INTSIZE, FF_INT|FF_DATA, None, None, None),
+        ('buf', PTRSIZE, FF_PTR|FF_DATA|offflag(),
+            OFF_CURRENT_SEGMENT, None, None),
+        ('elemsize', 2, FF_WORD|FF_DATA, None, None, None),
+        ('closed', 4, FF_DWORD|FF_DATA, None, None, None),
+        ('elemtype', PTRSIZE, FF_PTR|FF_DATA|offflag(),
+            OFF_CURRENT_SEGMENT, None, None),
+        ('sendx', INTSIZE, FF_INT|FF_DATA, None, None, None),
+        ('recvx', INTSIZE, FF_INT|FF_DATA, None, None, None),
+        ('recvq', 'go_waitq', None, None, None, None),
+        ('sendq', 'go_waitq', None, None, None, None),
+        ('lock', 'go_mutex', None, None, None, None)
         ]),
     ('go_name', [
-        ('flags', 1, FF_BYTE|FF_DATA, None, 'go_NameFlags'),
-        ('length_hi', 1, FF_BYTE|FF_DATA, None, None),
-        ('length_lo', 1, FF_BYTE|FF_DATA, None, None),
-        ('str', 0, FF_DATA|FF_STRLIT, idaapi.opinfo_t(), None)
+        ('flags', 1, FF_BYTE|FF_DATA, None, 'go_NameFlags', None),
+        ('length_hi', 1, FF_BYTE|FF_DATA, None, None, None),
+        ('length_lo', 1, FF_BYTE|FF_DATA, None, None, None),
+        ('str', 0, FF_DATA|FF_STRLIT, idaapi.opinfo_t(), None, None)
         ]),
     ('go_runtime_bitvector', [
-        ('n', 4, FF_DWORD|FF_DATA, None, None),
-        ('bytedata', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None)
+        ('n', 4, FF_DWORD|FF_DATA, None, None, None),
+        ('bytedata', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None, None)
         ]),
 
     # go_type metadata structs
@@ -77,107 +117,110 @@ GO_BUILTIN_STRUCTS = [
     # was made to represent them as a separate struct that
     # follows a go_type instead
     ('go_type_metadata_map', [
-        ('key', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('elem', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('bucket', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('keysize', 1, FF_BYTE|FF_DATA, None, None),
-        ('elemsize', 1, FF_BYTE|FF_DATA, None, None),
-        ('bucketsize', 2, FF_WORD|FF_DATA, None, None),
-        ('flags', 4, FF_DWORD|FF_DATA, None, 'go_maptype_flags')
+        ('key', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None, None),
+        ('elem', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None, None),
+        ('bucket', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None, None),
+        ('keysize', 1, FF_BYTE|FF_DATA, None, None, None),
+        ('elemsize', 1, FF_BYTE|FF_DATA, None, None, None),
+        ('bucketsize', 2, FF_WORD|FF_DATA, None, None, None),
+        ('flags', 4, FF_DWORD|FF_DATA, None, 'go_maptype_flags', None)
         ]),
     ('go_type_metadata_iface', [
-        ('pkgPath', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('mhdr', 'go_array', None, None, None)
+        ('pkgPath', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None, None),
+        ('mhdr', 'go_array', None, None, None, None)
         ]),
     ('go_type_metadata_ptr', [
-        ('_elem', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None)
+        ('_elem', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None, None)
         ]),
     ('go_type_metadata_func', [
-        ('inCount', 4, FF_DWORD|FF_DATA, None, None),
-        ('outCount', 4, FF_DWORD|FF_DATA, None, None)
+        ('inCount', 4, FF_DWORD|FF_DATA, None, None, None),
+        ('outCount', 4, FF_DWORD|FF_DATA, None, None, None)
         ]),
     # go_type_structfield is pointed to by go_type_metadata_struct
     # as `fields`
     ('go_type_structfield', [
-        ('name', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('typ', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('offsetAnon', 8, FF_QWORD|FF_DATA, None, None)
+        ('name', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None, None),
+        ('typ', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None, None),
+        ('offsetAnon', PTRSIZE, FF_QWORD|FF_DATA, None, None, None)
         ]),
     ('go_type_metadata_struct', [
-        ('pkgPath', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('fields', 'go_array', None, None, None)
+        ('pkgPath', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None, None),
+        ('fields', 'go_array', None, None, None, None)
         ]),
 
     ('go_itab', [
-        ('inter', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('_type', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('hash', 4, FF_DWORD, None, None),
-        ('_', 4, FF_DWORD|FF_DATA, None, None),
+        ('inter', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None, None),
+        ('_type', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None, None),
+        ('hash', 4, FF_DWORD, None, None, None),
+        ('_', 4, FF_DWORD|FF_DATA, None, None, None),
         ('fun', 0, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None)
+            None, None)
         ]),
     ('go_runtime_moduledata', [
-        ('pclntable', 'go_array', None, None, None),
-        ('ftab', 'go_array', None, None, None),
-        ('filetab', 'go_array', None, None, None),
+        ('pclntable', 'go_array', None, None, None, None),
+        ('ftab', 'go_array', None, None, None, None),
+        ('filetab', 'go_array', None, None, None, None),
         ('findfunctab', 8, FF_QWORD|FF_DATA|offflag(),
-            OFF_CURRENT_SEGMENT, None),
-        ('minpc', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('maxpc', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('text', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('etext', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('noptrdata', 8, FF_QWORD|FF_DATA|offflag(),
-            OFF_CURRENT_SEGMENT, None),
-        ('enoptrdata', 8, FF_QWORD|FF_DATA|offflag(),
-            OFF_CURRENT_SEGMENT, None),
-        ('data', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('edata', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('bss', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT, None),
-        ('ebss', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('noptrbss', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('enoptrbss', 8, FF_QWORD|FF_DATA|offflag(),
-            OFF_CURRENT_SEGMENT, None),
-        ('end', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT, None),
-        ('gcdata', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('gcbss', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('types', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('etypes', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
-            None),
-        ('textsecmap', 'go_array', None, None, None),
-        ('typelinks', 'go_array', None, None, None),
-        ('itablinks', 'go_array', None, None, None),
-        ('ptab', 'go_array', None, None, None),
-        ('pluginpath', 'go_string', None, None, None),
-        ('pkgHashes', 'go_array', None, None, None),
-        ('modulename', 'go_string', None, None, None),
-        ('modulehashes', 'go_array', None, None, None),
-        ('hasmain', 1, FF_BYTE|FF_DATA, None, None),
-        ('gcdatamask', 'go_runtime_bitvector', None, None, None),
-        ('gcbssmask', 'go_runtime_bitvector', None, None, None),
-        ('typemap', 'go_hmap', None, None, None),
-        ('bad', 1, FF_BYTE|FF_DATA, None, None),
-        ('next', 8, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT, None)
+            OFF_CURRENT_SEGMENT, None, None),
+        ('minpc', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None, None),
+        ('maxpc', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None, None),
+        ('text', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None, None),
+        ('etext', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None, None),
+        ('noptrdata', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+            OFF_CURRENT_SEGMENT, None, None),
+        ('enoptrdata', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+            OFF_CURRENT_SEGMENT, None, None),
+        ('data', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None, None),
+        ('edata', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None, None),
+        ('bss', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+            OFF_CURRENT_SEGMENT, None, None),
+        ('ebss', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+            OFF_CURRENT_SEGMENT, None, None),
+        ('noptrbss', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+            OFF_CURRENT_SEGMENT, None, None),
+        ('enoptrbss', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+            OFF_CURRENT_SEGMENT, None, None),
+        ('end', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+            OFF_CURRENT_SEGMENT, None, None),
+        ('gcdata', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+            OFF_CURRENT_SEGMENT, None, None),
+        ('gcbss', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+            OFF_CURRENT_SEGMENT, None, None),
+        ('types', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+            OFF_CURRENT_SEGMENT, None, None),
+        ('etypes', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+            OFF_CURRENT_SEGMENT, None, None),
+        ('textsecmap', 'go_array', None, None, None, None),
+        ('typelinks', 'go_array', None, None, None, None),
+        ('itablinks', 'go_array', None, None, None, None),
+        ('ptab', 'go_array', None, None, None, None),
+        ('pluginpath', 'go_string', None, None, None, None),
+        ('pkgHashes', 'go_array', None, None, None, None),
+        ('modulename', 'go_string', None, None, None, None),
+        ('modulehashes', 'go_array', None, None, None, None),
+        ('hasmain', 1, FF_BYTE|FF_DATA, None, None, None),
+        ('gcdatamask', 'go_runtime_bitvector', None, None, None, None),
+        ('gcbssmask', 'go_runtime_bitvector', None, None, None, None),
+        ('typemap', 'go_hmap', None, None, None, None),
+        ('bad', 1, FF_BYTE|FF_DATA, None, None, None),
+        ('next', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+            OFF_CURRENT_SEGMENT, None, None)
         ])
     ]
 
@@ -188,6 +231,14 @@ GO_TYPES_RANGES = list()
 
 
 def create_and_populate_struct(struct_name, struct_fields):
+    """
+    Creates a new IDA structure
+
+    :param struct_name: structure name
+    :param struct_fields: tuple of field information
+                          (see beginning of GO_BUILTIN_STRUCTS)
+    :return: struct_t of the newly created struct
+    """
     existing_struct = ida_struct.get_struc_id(struct_name)
     if existing_struct != BADADDR:
         print 'struct %s already exists, skipping..' % struct_name
@@ -195,9 +246,12 @@ def create_and_populate_struct(struct_name, struct_fields):
 
     new_struct = ida_struct.add_struc(BADADDR, struct_name)
     new_sptr = ida_struct.get_struc(new_struct)
-    for name, struct_name_or_size, typeflags, opinfo, enum_ptr in \
-            struct_fields:
+    for name, struct_name_or_size, typeflags, opinfo, enum_ptr, \
+            member_offset in struct_fields:
+        member_offset = member_offset or BADADDR
         print 'adding struct field %s:%s' % (struct_name, name)
+        if member_offset != BADADDR:
+            print 'at offset %x' % member_offset
         if type(struct_name_or_size) in (str,unicode):
             # plaster in an existing struct
             existing_struct_field = ida_struct.get_struc_id(
@@ -213,7 +267,7 @@ def create_and_populate_struct(struct_name, struct_fields):
             opinfo.tid = existing_struct_field
             ida_struct.add_struc_member(new_sptr,
                                         name,
-                                        BADADDR,
+                                        member_offset,
                                         FF_STRUCT|FF_DATA,
                                         opinfo,
                                         existing_size)
@@ -232,9 +286,10 @@ def create_and_populate_struct(struct_name, struct_fields):
                 #opinfo.tid = existing_enum
                 typeflags |= FF_0ENUM
             ida_struct.add_struc_member(
-                    new_sptr, name, BADADDR,
+                    new_sptr, name, member_offset,
                     typeflags, opinfo,
                     struct_name_or_size)
+    return new_sptr
 
 
 NAME_FLAGS = {
@@ -282,6 +337,37 @@ TYPEKIND_VALS = {
     'kindNoPointers': (0x80, 0x80)
     }
 
+TYPEKIND_SIZES = {
+    TYPEKIND_VALS['kindBool'][0]: 1,
+    TYPEKIND_VALS['kindInt'][0]: INTSIZE,
+    TYPEKIND_VALS['kindInt8'][0]: 1,
+    TYPEKIND_VALS['kindInt16'][0]: 2,
+    TYPEKIND_VALS['kindInt32'][0]: 4,
+    TYPEKIND_VALS['kindInt64'][0]: 8,
+    TYPEKIND_VALS['kindUint'][0]: INTSIZE,
+    TYPEKIND_VALS['kindUint8'][0]: 1,
+    TYPEKIND_VALS['kindUint16'][0]: 2,
+    TYPEKIND_VALS['kindUint32'][0]: 4,
+    TYPEKIND_VALS['kindUint64'][0]: 8,
+    TYPEKIND_VALS['kindUintptr'][0]: 8,
+    TYPEKIND_VALS['kindFloat32'][0]: 4,
+    TYPEKIND_VALS['kindFloat64'][0]: 8,
+    TYPEKIND_VALS['kindComplex64'][0]: 8,
+    TYPEKIND_VALS['kindComplex128'][0]: 16,
+    # sizeof(go_array)
+    TYPEKIND_VALS['kindArray'][0]: 16+PTRSIZE,
+    # sizeof(go_hchan)
+    TYPEKIND_VALS['kindChan'][0]: 6+(INTSIZE*4)+(PTRSIZE*4),
+    TYPEKIND_VALS['kindFunc'][0]: PTRSIZE,
+    TYPEKIND_VALS['kindInterface'][0]: 16,
+    # sizeof(go_hmap)
+    TYPEKIND_VALS['kindMap'][0]: 24+(PTRSIZE*3),
+    TYPEKIND_VALS['kindPtr'][0]: PTRSIZE,
+    TYPEKIND_VALS['kindSlice'][0]: PTRSIZE,
+    # sizeof(go_string)
+    TYPEKIND_VALS['kindString'][0]: PTRSIZE+8,
+    TYPEKIND_VALS['kindUnsafePointer'][0]: PTRSIZE,
+    }
 
 GO_BUILTIN_BITFIELDS = {
     # bitfield_name: (width, values)
@@ -348,27 +434,35 @@ def find_runtime_newobject_fn():
 NAME_RE = re.compile(r'^(\[(?P<arrlen>[0-9]*)])?(?P<remain>.*)')
 NON_ALNUM = re.compile('[^a-zA-Z0-9]')
 
-def normalize_name(name, ea):
-    tkind = (get_struct_val(ea, 'go_type0.kind') & 0x1f)
-    normalized_name = ''
-    prefixes = {
-        TYPEKIND_VALS['kindPtr'][0]: 'ptr_',
-        TYPEKIND_VALS['kindArray'][0]: 'arr_',
-        TYPEKIND_VALS['kindSlice'][0]: 'slc_',
-        TYPEKIND_VALS['kindFunc'][0]: 'func_',
-        TYPEKIND_VALS['kindChan'][0]: 'chan_',
-        TYPEKIND_VALS['kindMap'][0]: 'map_',
-        TYPEKIND_VALS['kindStruct'][0]: 'stct_'
-        }
-    if tkind in prefixes.keys():
-        normalized_name += prefixes[tkind]
+def normalize_name(name, ea, prepend_type_info=True):
+    normalized_name = []
+    if prepend_type_info:
+        if ea in [0, BADADDR]:
+            raise Exception('normalize_name: EA required ' \
+                                'for type prepend')
+        prefixes = {
+            TYPEKIND_VALS['kindPtr'][0]: 'ptr_',
+            TYPEKIND_VALS['kindArray'][0]: 'arr_',
+            TYPEKIND_VALS['kindSlice'][0]: 'slc_',
+            TYPEKIND_VALS['kindFunc'][0]: 'func_',
+            TYPEKIND_VALS['kindChan'][0]: 'chan_',
+            TYPEKIND_VALS['kindMap'][0]: 'map_',
+            TYPEKIND_VALS['kindStruct'][0]: 'stct_',
+            TYPEKIND_VALS['kindInterface'][0]: 'iface_'
+            }
+        tkind = (get_struct_val(ea, 'go_type0.kind') & 0x1f)
+        if tkind in prefixes.keys():
+            normalized_name.append(prefixes[tkind])
     name_match = NAME_RE.match(name)
     if name_match:
         matches = name_match.groupdict()
         if matches['arrlen']:
-            normalized_name += matches['arrlen']
-        normalized_name += '_' + NON_ALNUM.sub('_', matches['remain'])
-    return normalized_name
+            normalized_name.append(matches['arrlen'])
+        normalized_name.append(NON_ALNUM.sub('_', matches['remain']))
+    else:
+        # idk?
+        normalized_name.append(NON_ALNUM.sub('_', name))
+    return '_'.join(normalized_name)
 
 
 def map_type_structs():
@@ -430,15 +524,66 @@ def map_type_structs():
         if go_type_addr != BADADDR and not ida_bytes.is_struct(
                                 ida_bytes.get_flags(go_type_addr)):
             data_name = get_name(go_type_addr)
-            print 'found go data type at %s' % data_name
+            print 'found go reflect data type at %s' % data_name
             type_struct = declare_and_parse_go_type(go_type_addr)
             if type_struct != None:
+                # give it a unique name
                 success, type_name, type_tag, type_pkgdata = \
                         create_name(go_type_addr, type_struct)
                 if success and not is_in_nlist(go_type_addr):
                     print 'created go_name for %s' % type_name
                     normalized_name = normalize_name(type_name, go_type_addr)
                     set_name(go_type_addr, 'go_type__' + normalized_name)
+
+                # create new IDA structure out of the struct reflect
+                # data
+                typekind = (get_struct_val(go_type_addr, 'go_type0.kind') & 0x1f)
+                if typekind == TYPEKIND_VALS['kindStruct'][0]:
+                    create_go_struct(go_type_addr)
+
+
+def create_go_struct(ea):
+    """
+    Create an IDA structure out of the given go_type
+    at `ea`.
+
+    :param ea: go_type effective address
+    """
+    tflags = get_struct_val(ea, 'go_type0.tflag')
+    type_kind = (get_struct_val(ea, 'go_type0.kind') & 0x1f)
+    if type_kind != TYPEKIND_VALS['kindStruct'][0]:
+        raise Exception('go_type at 0x%x not a struct' % \
+                ea)
+    type_struct_size = ida_struct.get_struc_size(
+            ida_struct.get_struc(ida_struct.get_struc_id('go_type0')))
+    type_kind_ea = ea + type_struct_size
+    fields_soff = ida_struct.get_member_by_fullname(
+            'go_type_metadata_struct.fields')[0].soff
+
+    struct_name = 'anonymous_struct_%x' % ea
+    if tflags & TYPE_TFLAGS['named']:
+        struct_name = normalize_name(get_type_name(ea), None,
+                                     prepend_type_info=False)
+        if tflags & TYPE_TFLAGS['extraStar']:
+            struct_name = struct_name[1:]
+
+    fields_ea = type_kind_ea + fields_soff
+    num_fields = get_struct_val(fields_ea, 'go_array.len')
+    new_struct_mptr = None
+    print 'struct %s at 0x%x has %d fields' % \
+            (struct_name, fields_ea, num_fields)
+    if num_fields > 0:
+        fields_ptr_ea = get_struct_val(fields_ea,
+                                       'go_array.data')
+        print 'creating %d structfields at 0x%x' % \
+                (num_fields, fields_ptr_ea)
+        field_list = create_structfields(fields_ptr_ea,
+                                         num_fields)
+        print '0x%x: fields: %s' % (ea, field_list)
+        new_struct_mptr = create_and_populate_struct(
+                struct_name, field_list)
+
+    return (new_struct_mptr, struct_name)
 
 
 def declare_and_parse_go_type(ea):
@@ -482,10 +627,7 @@ def declare_and_parse_go_type(ea):
     elif type_kind == TYPEKIND_VALS['kindPtr'][0]:
         type_kind_name = 'go_type_metadata_ptr'
     elif type_kind == TYPEKIND_VALS['kindInterface'][0]:
-        pass
-        # TODO: figure out length of mhdr
-        #print 'adding go_type iface metadata at 0x%x' % type_kind_ea
-        #type_kind_id = ida_struct.get_struc_id('go_type_metadata_iface')
+        type_kind_name = 'go_type_metadata_iface'
     elif type_kind == TYPEKIND_VALS['kindStruct'][0]:
         type_kind_name = 'go_type_metadata_struct'
 
@@ -506,27 +648,32 @@ def declare_and_parse_go_type(ea):
             print 'ERROR: could not declare typekind %s struct at ' \
                     '0x%x' % (type_kind_name, type_kind_ea)
 
-        # special cases where we might want more data
-        if type_kind_name == 'go_type_metadata_struct':
-            # create structfields, followed by a new
-            # IDA structure if it's a named type
-            fields_soff = ida_struct.get_member_by_fullname(
-                    'go_type_metadata_struct.fields')[0].soff
-            fields_ea = type_kind_ea + fields_soff
-            num_fields = get_struct_val(fields_ea, 'go_array.len')
-            print '%s at 0x%x has %d fields' % \
-                    (type_kind_name, fields_ea, num_fields)
-            if num_fields > 0:
-                fields_ptr_ea = get_struct_val(fields_ea,
-                                               'go_array.data')
-                print 'creating %d structfields at 0x%x' % \
-                        (num_fields, fields_ptr_ea)
-                field_list = create_structfields(fields_ptr_ea,
-                                                 num_fields)
-                # TODO: create struct from field_list
-
-
     return type_struct
+
+
+def get_moduledata_name_offset(ea, name_offset):
+    types_soff = BADADDR
+    for mod_soff, mod_eoff in GO_TYPES_RANGES:
+        if ea >= mod_soff and ea < mod_eoff:
+            types_soff = mod_soff
+            break
+    if types_soff != BADADDR:
+        types_soff += name_offset
+    return types_soff
+
+
+def get_raw_name_str(ea):
+    name_len_hi = get_struct_val(ea, 'go_name.length_hi')
+    name_len_lo = get_struct_val(ea, 'go_name.length_lo')
+    name_len = (name_len_hi << 8) | name_len_lo
+    return ida_bytes.get_strlit_contents(ea+3, name_len,
+                                         ida_nalt.STRTYPE_C)
+
+
+def get_type_name(ea):
+    name_ea = get_moduledata_name_offset(ea,
+                get_struct_val(ea, 'go_type0.str'))
+    return get_raw_name_str(name_ea)
 
 
 def create_structfields(ea, num_fields):
@@ -534,15 +681,70 @@ def create_structfields(ea, num_fields):
     structfield_sptr = ida_struct.get_struc(structfield_id)
     structfield_size = ida_struct.get_struc_size(structfield_sptr)
 
-    # TODO: iterate through structfields, get and return names + tags
     fields = []
     for i in range(0, num_fields):
         fs_ea = ea + (i * structfield_size)
-        print 'creating structfield at 0x%x' % fs_ea
         ida_bytes.del_items(fs_ea, structfield_size)
         ida_bytes.create_struct(fs_ea, structfield_size,
                                 structfield_id)
+        fieldname_ea = get_struct_val(fs_ea,
+                                      'go_type_structfield.name')
+        fieldname_raw_str = get_raw_name_str(fieldname_ea)
 
+        fieldtype_ea = get_struct_val(fs_ea,
+                                      'go_type_structfield.typ')
+        fieldtype_size = get_struct_val(fieldtype_ea, 'go_type0.size')
+        fieldoffset = get_struct_val(fs_ea,
+                                     'go_type_structfield.offsetAnon')
+        fieldoffset >>= 1
+        fieldtype_kind = (get_struct_val(fieldtype_ea, 'go_type0.kind') \
+                            & 0x1f)
+
+        kind_datatypes = {
+            TYPEKIND_VALS['kindArray'][0]: 'go_array',
+            TYPEKIND_VALS['kindChan'][0]: 'go_hchan',
+            TYPEKIND_VALS['kindMap'][0]: 'go_hmap',
+            TYPEKIND_VALS['kindString'][0]: 'go_string',
+            TYPEKIND_VALS['kindInterface'][0]: 'go_interface',
+            TYPEKIND_VALS['kindSlice'][0]: FF_PTR|FF_DATA|offflag(),
+            TYPEKIND_VALS['kindPtr'][0]: FF_PTR|FF_DATA|offflag(),
+            TYPEKIND_VALS['kindUnsafePointer'][0]: FF_PTR|FF_DATA|offflag()
+            }
+        fieldsize_to_typesize = {
+            1: FF_BYTE,
+            2: FF_WORD,
+            4: FF_DWORD,
+            8: FF_QWORD
+            }
+
+        # TODO: pointers to structs? (mind those who reference
+        # themselves in a linkedlist or tree like form)
+        needs_offset = (fieldtype_kind in [TYPEKIND_VALS['kindPtr'][0],
+                                           TYPEKIND_VALS['kindSlice'][0],
+                                           TYPEKIND_VALS['kindUnsafePointer'][0]])
+
+        if fieldtype_kind == TYPEKIND_VALS['kindStruct'][0]:
+            child_struct_mptr = declare_and_parse_go_type(fieldtype_ea)
+            child_struct_name = ida_struct.get_struc_name(
+                                    child_struct_mptr.id)
+            field_type_info = child_struct_name
+        elif fieldtype_kind in kind_datatypes.keys():
+            field_type_info = kind_datatypes[fieldtype_kind]
+        else:
+            if fieldtype_size not in fieldsize_to_typesize.keys():
+                msg = '%s (0x%x, %d bytes) not in fieldtype_size' % \
+                        (fieldname_raw_str, fieldtype_ea, fieldtype_size)
+                print 'ERROR: ' + msg
+                raise Exception(msg)
+            field_type_info = fieldsize_to_typesize[fieldtype_size] \
+                                | FF_DATA
+        fields.append(
+            (fieldname_raw_str, fieldtype_size, field_type_info,
+                (OFF_CURRENT_SEGMENT if needs_offset else None),
+                None, fieldoffset)
+            )
+    return fields
+        
 
 
 def populate_builtin_structs():
@@ -622,17 +824,18 @@ def create_go_type_struct(idx, types_ea):
     types_opinfo.ri.tdelta = 0
     types_opinfo.ri.flags = ida_nalt.REF_OFF64
     go_type_spec = [
-        ('size', 8, FF_QWORD|FF_DATA, None, None),
-        ('ptrdata', 8, FF_QWORD|FF_DATA, None, None),
-        ('hash', 4, FF_DWORD|FF_DATA, None, None),
-        ('tflag', 1, FF_BYTE|FF_DATA, None, 'go_tflag'),
-        ('align', 1, FF_BYTE|FF_DATA, None, None),
-        ('fieldalign', 1, FF_BYTE|FF_DATA, None, None),
-        ('kind', 1, FF_BYTE|FF_DATA, None, 'go_typekind'),
-        ('alg', 8, FF_QWORD|FF_DATA, None, None),
-        ('gcdata', 8, FF_QWORD|FF_DATA, None, None),
-        ('str', 4, FF_DWORD|FF_DATA|offflag(), types_opinfo, None),
-        ('ptrToThis', 4, FF_DWORD|FF_DATA|offflag(), types_opinfo, None)
+        ('size', PTRSIZE, FF_QWORD|FF_DATA, None, None, None),
+        ('ptrdata', PTRSIZE, FF_QWORD|FF_DATA, None, None, None),
+        ('hash', 4, FF_DWORD|FF_DATA, None, None, None),
+        ('tflag', 1, FF_BYTE|FF_DATA, None, 'go_tflag', None),
+        ('align', 1, FF_BYTE|FF_DATA, None, None, None),
+        ('fieldalign', 1, FF_BYTE|FF_DATA, None, None, None),
+        ('kind', 1, FF_BYTE|FF_DATA, None, 'go_typekind', None),
+        ('alg', PTRSIZE, FF_QWORD|FF_DATA, None, None, None),
+        ('gcdata', PTRSIZE, FF_QWORD|FF_DATA, None, None, None),
+        ('str', 4, FF_DWORD|FF_DATA|offflag(), types_opinfo, None, None),
+        ('ptrToThis', 4, FF_DWORD|FF_DATA|offflag(), types_opinfo,
+            None, None)
         ]
     return create_and_populate_struct(go_type_name, go_type_spec)
 
@@ -645,8 +848,8 @@ def create_imethod_struct(idx, types_ea):
     types_opinfo.ri.tdelta = 0
     types_opinfo.ri.flags = ida_nalt.REF_OFF64
     go_imethod_spec = [
-        ('name', 4, FF_DWORD|FF_DATA|offflag(), types_opinfo, None),
-        ('ityp', 4, FF_DWORD|FF_DATA|offflag(), types_opinfo, None)
+        ('name', 4, FF_DWORD|FF_DATA|offflag(), types_opinfo, None, None),
+        ('ityp', 4, FF_DWORD|FF_DATA|offflag(), types_opinfo, None, None)
         ]
     return create_and_populate_struct(imethod_name, go_imethod_spec)
 
