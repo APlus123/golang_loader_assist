@@ -248,7 +248,8 @@ def create_and_populate_struct(struct_name, struct_fields):
     new_sptr = ida_struct.get_struc(new_struct)
     for name, struct_name_or_size, typeflags, opinfo, enum_ptr, \
             member_offset in struct_fields:
-        member_offset = member_offset or BADADDR
+        if member_offset is None:
+            member_offset = BADADDR
         print 'adding struct field %s:%s' % (struct_name, name)
         if member_offset != BADADDR:
             print 'at offset %x' % member_offset
@@ -283,7 +284,6 @@ def create_and_populate_struct(struct_name, struct_fields):
                 opinfo.ec.tid = existing_enum
                 opinfo.ec.serial = ida_enum.get_enum_idx(
                                         existing_enum)
-                #opinfo.tid = existing_enum
                 typeflags |= FF_0ENUM
             ida_struct.add_struc_member(
                     new_sptr, name, member_offset,
@@ -566,6 +566,7 @@ def create_go_struct(ea):
                                      prepend_type_info=False)
         if tflags & TYPE_TFLAGS['extraStar']:
             struct_name = struct_name[1:]
+        struct_name = 'go_struct_' + struct_name
 
     fields_ea = type_kind_ea + fields_soff
     num_fields = get_struct_val(fields_ea, 'go_array.len')
@@ -723,13 +724,21 @@ def create_structfields(ea, num_fields):
                                            TYPEKIND_VALS['kindSlice'][0],
                                            TYPEKIND_VALS['kindUnsafePointer'][0]])
 
+        invalid_names = ['sp']
+        if fieldname_raw_str in invalid_names:
+            fieldname_raw_str = '_' + fieldname_raw_str
+
         if fieldtype_kind == TYPEKIND_VALS['kindStruct'][0]:
-            child_struct_mptr = declare_and_parse_go_type(fieldtype_ea)
-            child_struct_name = ida_struct.get_struc_name(
-                                    child_struct_mptr.id)
-            field_type_info = child_struct_name
+            print 'creating new struct at %x for field %s' % \
+                    (fieldtype_ea, fieldname_raw_str)
+            child_struct_mptr, child_struct_name = create_go_struct(fieldtype_ea)
+            fieldtype_size = child_struct_name
+            field_type_info = None
         elif fieldtype_kind in kind_datatypes.keys():
             field_type_info = kind_datatypes[fieldtype_kind]
+            if type(field_type_info) in [str,unicode]:
+                fieldtype_size = field_type_info
+                field_type_info = None
         else:
             if fieldtype_size not in fieldsize_to_typesize.keys():
                 msg = '%s (0x%x, %d bytes) not in fieldtype_size' % \
