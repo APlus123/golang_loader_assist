@@ -52,6 +52,14 @@ GO_BUILTIN_STRUCTS = [
         ('len', 8, FF_QWORD|FF_DATA, None, None, None),
         ('cap', 8, FF_QWORD|FF_DATA, None, None, None)
         ]),
+    ('go_complex64', [
+        ('real', 4, FF_FLOAT|FF_DATA, None, None, None),
+        ('imag', 4, FF_FLOAT|FF_DATA, None, None, None)
+        ]),
+    ('go_complex128', [
+        ('real', 8, FF_DOUBLE|FF_DATA, None, None, None),
+        ('imag', 8, FF_DOUBLE|FF_DATA, None, None, None)
+        ]),
     ('go_hmap', [
         ('count', 8, FF_QWORD|FF_DATA, None, None, None),
         ('flags', 1, FF_BYTE|FF_DATA, None, 'go_maptype_flags', None),
@@ -100,6 +108,11 @@ GO_BUILTIN_STRUCTS = [
         ]),
     ('go_name', [
         ('flags', 1, FF_BYTE|FF_DATA, None, 'go_NameFlags', None),
+        ('length_hi', 1, FF_BYTE|FF_DATA, None, None, None),
+        ('length_lo', 1, FF_BYTE|FF_DATA, None, None, None),
+        ('str', 0, FF_DATA|FF_STRLIT, idaapi.opinfo_t(), None, None)
+        ]),
+    ('go_tag', [
         ('length_hi', 1, FF_BYTE|FF_DATA, None, None, None),
         ('length_lo', 1, FF_BYTE|FF_DATA, None, None, None),
         ('str', 0, FF_DATA|FF_STRLIT, idaapi.opinfo_t(), None, None)
@@ -230,15 +243,23 @@ GO_BUILTIN_STRUCTS = [
 GO_TYPES_RANGES = list()
 
 
-def create_and_populate_struct(struct_name, struct_fields):
+def create_and_populate_struct(struct_name, struct_fields,
+                               struct_comments=None):
     """
     Creates a new IDA structure
 
     :param struct_name: structure name
     :param struct_fields: tuple of field information
                           (see beginning of GO_BUILTIN_STRUCTS)
+    :param struct_comments: list of comments for each member.
+                            length must be equal to struct_fields
     :return: struct_t of the newly created struct
     """
+    if struct_comments:
+        if len(struct_comments) != len(struct_fields):
+            print 'ERROR: len(struct_comments) != len(struct_fields).' \
+                    ' %d is not %d.' % \
+                    (len(struct_comments), len(struct_fields))
     existing_struct = ida_struct.get_struc_id(struct_name)
     if existing_struct != BADADDR:
         print 'struct %s already exists, skipping..' % struct_name
@@ -246,6 +267,7 @@ def create_and_populate_struct(struct_name, struct_fields):
 
     new_struct = ida_struct.add_struc(BADADDR, struct_name)
     new_sptr = ida_struct.get_struc(new_struct)
+    idx = 0
     for name, struct_name_or_size, typeflags, opinfo, enum_ptr, \
             member_offset in struct_fields:
         if member_offset is None:
@@ -289,6 +311,13 @@ def create_and_populate_struct(struct_name, struct_fields):
                     new_sptr, name, member_offset,
                     typeflags, opinfo,
                     struct_name_or_size)
+        if struct_comments and struct_comments[idx]:
+            new_member_mptr = ida_struct.get_member_by_name(
+                                     new_sptr, name)
+            ida_struct.set_member_cmt(new_member_mptr,
+                                      struct_comments[idx],
+                                      False)
+        idx += 1
     return new_sptr
 
 
@@ -578,11 +607,17 @@ def create_go_struct(ea):
                                        'go_array.data')
         print 'creating %d structfields at 0x%x' % \
                 (num_fields, fields_ptr_ea)
-        field_list = create_structfields(fields_ptr_ea,
-                                         num_fields)
+        field_list, tag_list = create_structfields(fields_ptr_ea,
+                                                   num_fields)
         print '0x%x: fields: %s' % (ea, field_list)
         new_struct_mptr = create_and_populate_struct(
-                struct_name, field_list)
+                struct_name, field_list,
+                struct_comments=tag_list)
+        if new_struct_mptr:
+            ida_struct.set_struc_cmt(
+                    new_struct_mptr.id,
+                    '0x%x' % ea,
+                    False)
 
     return (new_struct_mptr, struct_name)
 
@@ -683,6 +718,7 @@ def create_structfields(ea, num_fields):
     structfield_size = ida_struct.get_struc_size(structfield_sptr)
 
     fields = []
+    tags = []
     for i in range(0, num_fields):
         fs_ea = ea + (i * structfield_size)
         ida_bytes.del_items(fs_ea, structfield_size)
@@ -690,7 +726,10 @@ def create_structfields(ea, num_fields):
                                 structfield_id)
         fieldname_ea = get_struct_val(fs_ea,
                                       'go_type_structfield.name')
-        fieldname_raw_str = get_raw_name_str(fieldname_ea)
+
+        success, fieldname_raw_str, tag, pkgpath = \
+                get_name_info(fieldname_ea)
+        tags.append(tag)
 
         fieldtype_ea = get_struct_val(fs_ea,
                                       'go_type_structfield.typ')
@@ -707,6 +746,8 @@ def create_structfields(ea, num_fields):
             TYPEKIND_VALS['kindMap'][0]: 'go_hmap',
             TYPEKIND_VALS['kindString'][0]: 'go_string',
             TYPEKIND_VALS['kindInterface'][0]: 'go_interface',
+            TYPEKIND_VALS['kindComplex64'][0]: 'go_complex64',
+            TYPEKIND_VALS['kindComplex128'][0]: 'go_complex128',
             TYPEKIND_VALS['kindSlice'][0]: FF_PTR|FF_DATA|offflag(),
             TYPEKIND_VALS['kindPtr'][0]: FF_PTR|FF_DATA|offflag(),
             TYPEKIND_VALS['kindUnsafePointer'][0]: FF_PTR|FF_DATA|offflag()
@@ -752,7 +793,7 @@ def create_structfields(ea, num_fields):
                 (OFF_CURRENT_SEGMENT if needs_offset else None),
                 None, fieldoffset)
             )
-    return fields
+    return fields, tags
         
 
 
@@ -779,8 +820,8 @@ def create_name(type_ea, type_struct):
     #
     # return the following:
     # (success, name value, tag value, pkgPath value)
-    tag_value = pkgPath_value = None
 
+    name_struct_id = ida_struct.get_struc_id('go_name')
     str_member = ida_struct.get_member_by_name(type_struct, 'str')
     str_soff = str_member.soff
     name_offset = ida_bytes.get_dword(type_ea + str_soff)
@@ -789,24 +830,23 @@ def create_name(type_ea, type_struct):
     ida_struct.retrieve_member_info(str_opinfo, str_member)
     types_base_ea = str_opinfo.ri.base
 
-    name_struct_id = ida_struct.get_struc_id('go_name')
 
     name_ea = types_base_ea + name_offset
-    name_flags = get_byte(name_ea)
-
-    # (go_name.length_hi << 8) | go_name.length_lo
-    str_len = \
-            ((ida_bytes.get_byte(name_ea + 1) << 8) & 0xffff) | \
-             (ida_bytes.get_byte(name_ea + 2) & 0xffff)
-
-    str_value = ida_bytes.get_strlit_contents(name_ea+3, str_len, 0)
+    success, str_value, tag_value, pkgPath_value = \
+            get_name_info(name_ea)
     if get_struct_val(type_ea, 'go_type0.tflag') \
             & TYPE_TFLAGS['extraStar']:
         str_value = str_value[1:]
 
-    name_struct_len = 3 + str_len
+    if not success:
+        print 'ERROR: could not get name info at %x' % \
+                name_ea
+        return (False, None, None, None)
+
+    name_struct_len = 3 + len(str_value)
     print 'creating go_name of size %d at 0x%x' % \
             (name_struct_len, name_ea)
+
     if not ida_bytes.del_items(name_ea, 0, name_struct_len):
         print 'ERROR: failed to undefine data for go_name ' \
                 'at 0x%x' % name_ea
@@ -819,10 +859,35 @@ def create_name(type_ea, type_struct):
 
     set_name(name_ea, 'go_name__' + normalize_name(str_value, type_ea))
 
-    # TODO: tag + pkgPath
-
     return (True, str_value, tag_value, pkgPath_value)
 
+
+def get_name_info(name_ea):
+    str_value = tag_value = pkgPath_value = None
+
+    name_flags = get_byte(name_ea)
+
+    # (go_name.length_hi << 8) | go_name.length_lo
+    str_len = \
+            ((ida_bytes.get_byte(name_ea + 1) << 8) & 0xffff) | \
+             (ida_bytes.get_byte(name_ea + 2) & 0xffff)
+
+    str_value = ida_bytes.get_strlit_contents(name_ea+3, str_len, 0)
+
+    if get_struct_val(name_ea, 'go_name.flags') & \
+            NAME_FLAGS['tagFollowsName']:
+        tag_ea = name_ea + 3 + str_len
+        tag_len = \
+                ((ida_bytes.get_byte(tag_ea) << 8) & 0xffff) | \
+                 (ida_bytes.get_byte(tag_ea + 1) & 0xffff)
+        if tag_len > 0:
+            print '0x%x contains %d byte long tag' % (tag_ea, tag_len)
+            tag_value = ida_bytes.get_strlit_contents(tag_ea+2, tag_len, 0)
+            print 'tag: %s' % tag_value
+
+    # TODO: pkgPath
+
+    return (True, str_value, tag_value, pkgPath_value)
 
 
 def create_go_type_struct(idx, types_ea):
