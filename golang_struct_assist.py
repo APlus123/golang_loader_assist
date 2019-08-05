@@ -41,16 +41,23 @@ OFF_CURRENT_SEGMENT.ri.flags = ida_nalt.REF_OFF64
 GO_BUILTIN_STRUCTS = [
     # primitives
     ('go_string', [
-        # (name, size(int) or struct name(str), typeflags, opinfo, enum)
+        # (name, size(int) or struct name(str), typeflags, opinfo, enum,
+        #  offset (or None placing at the end of the struct))
         ('str', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
                 OFF_CURRENT_SEGMENT, None, None),
-        ('len', 8, FF_QWORD|FF_DATA, None, None, None)
+        ('len', INTSIZE, FF_QWORD|FF_DATA, None, None, None)
         ]),
     ('go_array', [
-        ('data', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+        ('data', PTRSIZE, FF_PTR|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
             None, None),
-        ('len', 8, FF_QWORD|FF_DATA, None, None, None),
-        ('cap', 8, FF_QWORD|FF_DATA, None, None, None)
+        ('len', INTSIZE, FF_QWORD|FF_DATA, None, None, None),
+        ('cap', INTSIZE, FF_QWORD|FF_DATA, None, None, None)
+        ]),
+    ('go_slice', [
+        ('array', PTRSIZE, FF_PTR|FF_DATA|offflag(),
+            OFF_CURRENT_SEGMENT, None, None),
+        ('len', INTSIZE, FF_INT|FF_DATA, None, None, None),
+        ('cap', INTSIZE, FF_INT|FF_DATA, None, None, None)
         ]),
     ('go_complex64', [
         ('real', 4, FF_FLOAT|FF_DATA, None, None, None),
@@ -119,7 +126,7 @@ GO_BUILTIN_STRUCTS = [
         ]),
     ('go_runtime_bitvector', [
         ('n', 4, FF_DWORD|FF_DATA, None, None, None),
-        ('bytedata', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+        ('bytedata', PTRSIZE, FF_PTR|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
             None, None)
         ]),
 
@@ -130,11 +137,11 @@ GO_BUILTIN_STRUCTS = [
     # was made to represent them as a separate struct that
     # follows a go_type instead
     ('go_type_metadata_map', [
-        ('key', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+        ('key', PTRSIZE, FF_PTR|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
             None, None),
-        ('elem', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+        ('elem', PTRSIZE, FF_PTR|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
             None, None),
-        ('bucket', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+        ('bucket', PTRSIZE, FF_PTR|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
             None, None),
         ('keysize', 1, FF_BYTE|FF_DATA, None, None, None),
         ('elemsize', 1, FF_BYTE|FF_DATA, None, None, None),
@@ -142,97 +149,104 @@ GO_BUILTIN_STRUCTS = [
         ('flags', 4, FF_DWORD|FF_DATA, None, 'go_maptype_flags', None)
         ]),
     ('go_type_metadata_iface', [
-        ('pkgPath', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+        ('pkgPath', PTRSIZE, FF_PTR|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
             None, None),
-        ('mhdr', 'go_array', None, None, None, None)
+        ('mhdr', 'go_slice', None, None, None, None)
         ]),
     ('go_type_metadata_ptr', [
-        ('_elem', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+        ('_elem', PTRSIZE, FF_PTR|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
             None, None)
         ]),
     ('go_type_metadata_func', [
         ('inCount', 4, FF_DWORD|FF_DATA, None, None, None),
         ('outCount', 4, FF_DWORD|FF_DATA, None, None, None)
         ]),
+    ('go_type_metadata_array', [
+        ('elem', PTRSIZE, FF_PTR|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None, None),
+        ('slice', PTRSIZE, FF_PTR|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+            None, None),
+        ('len', PTRSIZE, FF_PTR|FF_DATA, None, None, None)
+        ]),
     # go_type_structfield is pointed to by go_type_metadata_struct
     # as `fields`
     ('go_type_structfield', [
-        ('name', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+        ('name', PTRSIZE, FF_PTR|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
             None, None),
-        ('typ', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+        ('typ', PTRSIZE, FF_PTR|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
             None, None),
-        ('offsetAnon', PTRSIZE, FF_QWORD|FF_DATA, None, None, None)
+        ('offsetAnon', PTRSIZE, FF_INT|FF_DATA, None, None, None)
         ]),
     ('go_type_metadata_struct', [
-        ('pkgPath', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+        ('pkgPath', PTRSIZE, FF_PTR|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
             None, None),
-        ('fields', 'go_array', None, None, None, None)
+        ('fields', 'go_slice', None, None, None, None)
         ]),
 
     ('go_itab', [
-        ('inter', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+        ('inter', PTRSIZE, FF_PTR|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
             None, None),
-        ('_type', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+        ('_type', PTRSIZE, FF_PTR|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
             None, None),
         ('hash', 4, FF_DWORD, None, None, None),
         ('_', 4, FF_DWORD|FF_DATA, None, None, None),
-        ('fun', 0, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+        ('fun', 0, FF_PTR|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
             None, None)
         ]),
     ('go_runtime_moduledata', [
-        ('pclntable', 'go_array', None, None, None, None),
-        ('ftab', 'go_array', None, None, None, None),
-        ('filetab', 'go_array', None, None, None, None),
-        ('findfunctab', 8, FF_QWORD|FF_DATA|offflag(),
+        ('pclntable', 'go_slice', None, None, None, None),
+        ('ftab', 'go_slice', None, None, None, None),
+        ('filetab', 'go_slice', None, None, None, None),
+        ('findfunctab', 8, FF_PTR|FF_DATA|offflag(),
             OFF_CURRENT_SEGMENT, None, None),
-        ('minpc', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+        ('minpc', PTRSIZE, FF_PTR|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
             None, None),
-        ('maxpc', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+        ('maxpc', PTRSIZE, FF_PTR|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
             None, None),
-        ('text', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+        ('text', PTRSIZE, FF_PTR|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
             None, None),
-        ('etext', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+        ('etext', PTRSIZE, FF_PTR|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
             None, None),
-        ('noptrdata', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+        ('noptrdata', PTRSIZE, FF_PTR|FF_DATA|offflag(),
             OFF_CURRENT_SEGMENT, None, None),
-        ('enoptrdata', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+        ('enoptrdata', PTRSIZE, FF_PTR|FF_DATA|offflag(),
             OFF_CURRENT_SEGMENT, None, None),
-        ('data', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+        ('data', PTRSIZE, FF_PTR|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
             None, None),
-        ('edata', PTRSIZE, FF_QWORD|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
+        ('edata', PTRSIZE, FF_PTR|FF_DATA|offflag(), OFF_CURRENT_SEGMENT,
             None, None),
-        ('bss', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+        ('bss', PTRSIZE, FF_PTR|FF_DATA|offflag(),
             OFF_CURRENT_SEGMENT, None, None),
-        ('ebss', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+        ('ebss', PTRSIZE, FF_PTR|FF_DATA|offflag(),
             OFF_CURRENT_SEGMENT, None, None),
-        ('noptrbss', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+        ('noptrbss', PTRSIZE, FF_PTR|FF_DATA|offflag(),
             OFF_CURRENT_SEGMENT, None, None),
-        ('enoptrbss', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+        ('enoptrbss', PTRSIZE, FF_PTR|FF_DATA|offflag(),
             OFF_CURRENT_SEGMENT, None, None),
-        ('end', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+        ('end', PTRSIZE, FF_PTR|FF_DATA|offflag(),
             OFF_CURRENT_SEGMENT, None, None),
-        ('gcdata', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+        ('gcdata', PTRSIZE, FF_PTR|FF_DATA|offflag(),
             OFF_CURRENT_SEGMENT, None, None),
-        ('gcbss', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+        ('gcbss', PTRSIZE, FF_PTR|FF_DATA|offflag(),
             OFF_CURRENT_SEGMENT, None, None),
-        ('types', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+        ('types', PTRSIZE, FF_PTR|FF_DATA|offflag(),
             OFF_CURRENT_SEGMENT, None, None),
-        ('etypes', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+        ('etypes', PTRSIZE, FF_PTR|FF_DATA|offflag(),
             OFF_CURRENT_SEGMENT, None, None),
-        ('textsecmap', 'go_array', None, None, None, None),
-        ('typelinks', 'go_array', None, None, None, None),
-        ('itablinks', 'go_array', None, None, None, None),
-        ('ptab', 'go_array', None, None, None, None),
+        ('textsecmap', 'go_slice', None, None, None, None),
+        ('typelinks', 'go_slice', None, None, None, None),
+        ('itablinks', 'go_slice', None, None, None, None),
+        ('ptab', 'go_slice', None, None, None, None),
         ('pluginpath', 'go_string', None, None, None, None),
-        ('pkgHashes', 'go_array', None, None, None, None),
+        ('pkgHashes', 'go_slice', None, None, None, None),
         ('modulename', 'go_string', None, None, None, None),
-        ('modulehashes', 'go_array', None, None, None, None),
+        ('modulehashes', 'go_slice', None, None, None, None),
         ('hasmain', 1, FF_BYTE|FF_DATA, None, None, None),
         ('gcdatamask', 'go_runtime_bitvector', None, None, None, None),
         ('gcbssmask', 'go_runtime_bitvector', None, None, None, None),
         ('typemap', 'go_hmap', None, None, None, None),
         ('bad', 1, FF_BYTE|FF_DATA, None, None, None),
-        ('next', PTRSIZE, FF_QWORD|FF_DATA|offflag(),
+        ('next', PTRSIZE, FF_PTR|FF_DATA|offflag(),
             OFF_CURRENT_SEGMENT, None, None)
         ])
     ]
@@ -244,22 +258,30 @@ GO_TYPES_RANGES = list()
 
 
 def create_and_populate_struct(struct_name, struct_fields,
-                               struct_comments=None):
+                               member_comments=None,
+                               member_tinfos=None):
     """
     Creates a new IDA structure
 
     :param struct_name: structure name
     :param struct_fields: tuple of field information
                           (see beginning of GO_BUILTIN_STRUCTS)
-    :param struct_comments: list of comments for each member.
+    :param member_comments: list of comments for each member.
                             length must be equal to struct_fields
+    :param member_tinfos: list of tinfo_t descriptors for each member.
+                          length must be euqal to struct_fields
     :return: struct_t of the newly created struct
     """
-    if struct_comments:
-        if len(struct_comments) != len(struct_fields):
-            print 'ERROR: len(struct_comments) != len(struct_fields).' \
+    if member_comments:
+        if len(member_comments) != len(struct_fields):
+            print 'ERROR: len(member_comments) != len(struct_fields).' \
                     ' %d is not %d.' % \
-                    (len(struct_comments), len(struct_fields))
+                    (len(member_comments), len(struct_fields))
+    if member_tinfos:
+        if len(member_tinfos) != len(struct_fields):
+            print 'ERROR: len(member_tinfos) != len(struct_fields).' \
+                    ' %d is not %d.' % \
+                    (len(member_tinfos), len(struct_fields))
     existing_struct = ida_struct.get_struc_id(struct_name)
     if existing_struct != BADADDR:
         print 'struct %s already exists, skipping..' % struct_name
@@ -311,12 +333,20 @@ def create_and_populate_struct(struct_name, struct_fields,
                     new_sptr, name, member_offset,
                     typeflags, opinfo,
                     struct_name_or_size)
-        if struct_comments and struct_comments[idx]:
+        if member_comments and member_comments[idx]:
             new_member_mptr = ida_struct.get_member_by_name(
                                      new_sptr, name)
             ida_struct.set_member_cmt(new_member_mptr,
-                                      struct_comments[idx],
+                                      member_comments[idx],
                                       False)
+        if member_tinfos and member_tinfos[idx]:
+            new_member_mptr = ida_struct.get_member_by_name(
+                                     new_sptr, name)
+            ida_struct.set_member_tinfo(new_sptr,
+                                        new_member_mptr,
+                                        0,
+                                        member_tinfos[idx],
+                                        0)
         idx += 1
     return new_sptr
 
@@ -595,7 +625,7 @@ def create_go_struct(ea):
                                      prepend_type_info=False)
         if tflags & TYPE_TFLAGS['extraStar']:
             struct_name = struct_name[1:]
-        struct_name = 'go_struct_' + struct_name
+        struct_name = 'go_struct__' + struct_name
 
     fields_ea = type_kind_ea + fields_soff
     num_fields = get_struct_val(fields_ea, 'go_array.len')
@@ -607,12 +637,13 @@ def create_go_struct(ea):
                                        'go_array.data')
         print 'creating %d structfields at 0x%x' % \
                 (num_fields, fields_ptr_ea)
-        field_list, tag_list = create_structfields(fields_ptr_ea,
-                                                   num_fields)
+        field_list, tag_list, tinfo_list = \
+                create_structfields(fields_ptr_ea, num_fields)
         print '0x%x: fields: %s' % (ea, field_list)
         new_struct_mptr = create_and_populate_struct(
                 struct_name, field_list,
-                struct_comments=tag_list)
+                member_comments=tag_list,
+                member_tinfos=tinfo_list)
         if new_struct_mptr:
             ida_struct.set_struc_cmt(
                     new_struct_mptr.id,
@@ -719,6 +750,7 @@ def create_structfields(ea, num_fields):
 
     fields = []
     tags = []
+    tinfos = []
     for i in range(0, num_fields):
         fs_ea = ea + (i * structfield_size)
         ida_bytes.del_items(fs_ea, structfield_size)
@@ -739,16 +771,18 @@ def create_structfields(ea, num_fields):
         fieldoffset >>= 1
         fieldtype_kind = (get_struct_val(fieldtype_ea, 'go_type0.kind') \
                             & 0x1f)
+        field_tinfo = None
 
         kind_datatypes = {
-            TYPEKIND_VALS['kindArray'][0]: 'go_array',
+            TYPEKIND_VALS['kindSlice'][0]: 'go_slice',
             TYPEKIND_VALS['kindChan'][0]: 'go_hchan',
             TYPEKIND_VALS['kindMap'][0]: 'go_hmap',
             TYPEKIND_VALS['kindString'][0]: 'go_string',
             TYPEKIND_VALS['kindInterface'][0]: 'go_interface',
+            TYPEKIND_VALS['kindFloat32'][0]: FF_FLOAT,
+            TYPEKIND_VALS['kindFloat64'][0]: FF_DOUBLE,
             TYPEKIND_VALS['kindComplex64'][0]: 'go_complex64',
             TYPEKIND_VALS['kindComplex128'][0]: 'go_complex128',
-            TYPEKIND_VALS['kindSlice'][0]: FF_PTR|FF_DATA|offflag(),
             TYPEKIND_VALS['kindPtr'][0]: FF_PTR|FF_DATA|offflag(),
             TYPEKIND_VALS['kindUnsafePointer'][0]: FF_PTR|FF_DATA|offflag()
             }
@@ -756,7 +790,8 @@ def create_structfields(ea, num_fields):
             1: FF_BYTE,
             2: FF_WORD,
             4: FF_DWORD,
-            8: FF_QWORD
+            8: FF_QWORD,
+            16: FF_OWORD
             }
 
         # TODO: pointers to structs? (mind those who reference
@@ -769,18 +804,100 @@ def create_structfields(ea, num_fields):
         if fieldname_raw_str in invalid_names:
             fieldname_raw_str = '_' + fieldname_raw_str
 
-        if fieldtype_kind == TYPEKIND_VALS['kindStruct'][0]:
+        print 'field %s is type %d' % \
+                (fieldname_raw_str, fieldtype_kind)
+
+        # TODO: kindPtr pointing to correct structure
+        if fieldtype_kind == TYPEKIND_VALS['kindArray'][0]:
+            print 'creating new array at %x for field %s' % \
+                    (fieldtype_ea, fieldname_raw_str)
+            # create a go struct of the type the array points to,
+            # if needed.
+            type_size = ida_struct.get_struc_size(
+                    ida_struct.get_struc(ida_struct.get_struc_id('go_type0')))
+            array_metadata_ea = fieldtype_ea + type_size
+            array_len = get_struct_val(array_metadata_ea,
+                                       'go_type_metadata_array.len')
+            array_elem_ea = get_struct_val(array_metadata_ea,
+                                           'go_type_metadata_array.elem')
+            array_elem_kind = (get_struct_val(array_elem_ea,
+                                              'go_type0.kind') & 0x1f)
+            array_elem_size = get_struct_val(array_elem_ea,
+                                             'go_type0.size')
+            array_tinfo = ida_typeinf.tinfo_t()
+            array_type_decl = ''
+            fieldsize_to_decl = {
+                1: '__int8',
+                2: '__int16',
+                4: '__int32',
+                8: '__int64',
+                16: '__int128'
+                }
+
+            while True:
+                if array_elem_kind == TYPEKIND_VALS['kindArray'][0]:
+                    # traverse through multi-dimensional arrays
+                    # XXX
+                    print '%s: MULLLLLTIBALLLLL' % fieldname_raw_str
+                    array_type_decl = ('[%d]' % array_len) + array_type_decl
+                    subarray_metadata_ea = array_elem_ea + type_size
+                    array_elem_ea = get_struct_val(subarray_metadata_ea,
+                                                   'go_type_metadata_array.elem')
+                    array_elem_kind = (get_struct_val(
+                        array_elem_ea, 'go_type0.kind') & 0x1f)
+                    array_elem_size = get_struct_val(array_elem_ea,
+                                                     'go_type0.size')
+                    array_len = get_struct_val(subarray_metadata_ea,
+                                               'go_type_metadata_array.len')
+                    continue
+                if array_elem_kind == TYPEKIND_VALS['kindStruct'][0]:
+                    array_struct_mptr, array_struct_name = create_go_struct(array_elem_ea)
+                    array_type_decl = array_struct_name + array_type_decl
+                    fieldtype_size = array_struct_name
+                    field_type_info = None
+                    break
+                elif array_elem_kind in kind_datatypes.keys():
+                    field_type_info = kind_datatypes[array_elem_kind]
+                    if type(field_type_info) in [str,unicode]:
+                        array_type_decl = field_type_info + array_type_decl
+                        fieldtype_size = field_type_info
+                        field_type_info = None
+                    else:
+                        array_type_decl = fieldsize_to_decl[array_elem_size] + \
+                                            array_type_decl
+                    break
+                else:
+                    array_type_decl = fieldsize_to_decl[array_elem_size] \
+                                        + array_type_decl
+                    field_type_info = fieldsize_to_typesize[array_elem_size] \
+                                        | FF_DATA
+                    fieldtype_size = array_elem_size
+                    break
+
+            array_type_decl += '[%d]' % array_len
+
+            array_type_decl += ';'
+            print 'array_type_decl for %s is %s' % \
+                    (fieldname_raw_str, array_type_decl)
+            ida_typeinf.parse_decl(array_tinfo,
+                                   idaapi.cvar.idati,
+                                   array_type_decl,
+                                   ida_typeinf.PT_TYP)
+            field_tinfo = array_tinfo
+        elif fieldtype_kind == TYPEKIND_VALS['kindStruct'][0]:
             print 'creating new struct at %x for field %s' % \
                     (fieldtype_ea, fieldname_raw_str)
             child_struct_mptr, child_struct_name = create_go_struct(fieldtype_ea)
             fieldtype_size = child_struct_name
             field_type_info = None
         elif fieldtype_kind in kind_datatypes.keys():
+            # pick a pre-selected struct or typeflags to represent the field
             field_type_info = kind_datatypes[fieldtype_kind]
             if type(field_type_info) in [str,unicode]:
                 fieldtype_size = field_type_info
                 field_type_info = None
         else:
+            # just pick a type based on the size
             if fieldtype_size not in fieldsize_to_typesize.keys():
                 msg = '%s (0x%x, %d bytes) not in fieldtype_size' % \
                         (fieldname_raw_str, fieldtype_ea, fieldtype_size)
@@ -788,12 +905,15 @@ def create_structfields(ea, num_fields):
                 raise Exception(msg)
             field_type_info = fieldsize_to_typesize[fieldtype_size] \
                                 | FF_DATA
+
+        tinfos.append(field_tinfo)
         fields.append(
             (fieldname_raw_str, fieldtype_size, field_type_info,
                 (OFF_CURRENT_SEGMENT if needs_offset else None),
                 None, fieldoffset)
             )
-    return fields, tags
+
+    return fields, tags, tinfos
         
 
 
