@@ -294,9 +294,8 @@ def create_and_populate_struct(struct_name, struct_fields,
             member_offset in struct_fields:
         if member_offset is None:
             member_offset = BADADDR
-        print 'adding struct field %s:%s' % (struct_name, name)
-        if member_offset != BADADDR:
-            print 'at offset %x' % member_offset
+        print 'adding struct field %s:%s:%s' % \
+                (struct_name, name, member_offset)
         if type(struct_name_or_size) in (str,unicode):
             # plaster in an existing struct
             existing_struct_field = ida_struct.get_struc_id(
@@ -486,9 +485,6 @@ def get_struct_val(ea, fullname):
     return type_ret_map[member_type_flag](ea + struct_member.soff)
 
 
-def find_runtime_newobject_fn():
-    return get_name_ea(BADADDR, 'runtime_newobject')
-
 
 NAME_RE = re.compile(r'^(\[(?P<arrlen>[0-9]*)])?(?P<remain>.*)')
 NON_ALNUM = re.compile('[^a-zA-Z0-9]')
@@ -524,81 +520,134 @@ def normalize_name(name, ea, prepend_type_info=True):
     return '_'.join(normalized_name)
 
 
+def get_segment_offsets(segm_name):
+    segm = idaapi.get_segm_by_name(segm_name)
+    if not segm:
+        if segm_name.startswith('.'):
+            # Mach-O binaries...
+            segm = idaapi.get_segm_by_name('_' + segm_name[1:])
+        if not segm:
+            raise Exception('could not find %s segment' % segm_name)
+    return segm.start_ea, segm.end_ea
+
+
 def map_type_structs():
-    runtime_newobject_fn = find_runtime_newobject_fn()
-    if runtime_newobject_fn == BADADDR:
-        print 'Could not find runtime_newobject, not moving on ' \
-                '(did you run golang_loader_assist.py beforehand?)'
-        return 1
 
-    for newobject_xref in XrefsTo(runtime_newobject_fn, 0):
-        # find the most recent mov to [rsp] prior to the call
-        # instruction, continue backtracking til you find
-        # the register being assigned an EA to an immediate value
-        #
-        # lea rbx, unk_XXXXXX
-        # ...
-        # mov [rsp], rbx
-        # ...
-        # call runtime_newobject
-        register_n = -1
-        xref_func = get_func(newobject_xref.frm)
-        go_type_addr = BADADDR
-        if not xref_func or xref_func.start_ea == BADADDR:
-            continue
-
-        inst = DecodePreviousInstruction(newobject_xref.frm)
-        while inst and inst.ea != BADADDR:
-            if inst.ea < xref_func.start_ea:
-                # we went past the actual function
-                print 'inst went past the function EA, wat..'
-                break
-
-            if register_n == -1:
-                # is it the mov [rsp], xxx instruction?
-                if inst.Op1.specflag1: # SIB byte in effect
-                    regsize = get_dtype_size(inst.Op1.dtype)
-                    base_reg_n = inst.Op1.specflag2 & 7
-                    if idaapi.get_reg_name(base_reg_n, regsize) == 'rsp' \
-                            and inst.Op1.addr == 0:
-                        register_n = inst.Op2.reg
-
-            else:
-                # is it the lea xxx, unk_XXXXXX instruction?
-                if inst.Op1.reg == register_n and \
-                        get_byte(inst.ea+1) == 0x8D:
-
-                    # assure second operand is an immediate value
-                    if inst.Op2.type == 2:
-                        go_type_addr = inst.Op2.addr
-                    else:
-                        # it's grabbing it from a struct field
-                        # or something. ignore it.  we're most
-                        # likely in the "runtime" module anyway.
-                        pass
-
-                    break
-            inst = DecodePreviousInstruction(inst.ea)
-
-        if go_type_addr != BADADDR and not ida_bytes.is_struct(
-                                ida_bytes.get_flags(go_type_addr)):
-            data_name = get_name(go_type_addr)
-            print 'found go reflect data type at %s' % data_name
-            type_struct = declare_and_parse_go_type(go_type_addr)
+    rodata_start_ea, _ = get_segment_offsets('.rodata')
+    typelink_start_ea, typelink_end_ea = get_segment_offsets('.typelink')
+    num_types = (typelink_end_ea - typelink_start_ea) / 4
+    types_parsed = 0
+    structs_created = 0
+    for idx in range(0, num_types):
+        type_ea = rodata_start_ea + \
+                ida_bytes.get_dword(typelink_start_ea + (idx*4))
+        if not ida_bytes.is_struct(ida_bytes.get_flags(type_ea)):
+            print 'parsing go_type data at %x' % type_ea
+            type_struct = declare_and_parse_go_type(type_ea)
             if type_struct != None:
                 # give it a unique name
                 success, type_name, type_tag, type_pkgdata = \
-                        create_name(go_type_addr, type_struct)
-                if success and not is_in_nlist(go_type_addr):
+                        create_name(type_ea, type_struct)
+                if success and not is_in_nlist(type_ea):
                     print 'created go_name for %s' % type_name
-                    normalized_name = normalize_name(type_name, go_type_addr)
-                    set_name(go_type_addr, 'go_type__' + normalized_name)
+                    normalized_name = normalize_name(type_name, type_ea)
+                    set_name(type_ea, 'go_type__' + normalized_name)
+                    types_parsed += 1
 
                 # create new IDA structure out of the struct reflect
                 # data
-                typekind = (get_struct_val(go_type_addr, 'go_type0.kind') & 0x1f)
+                typekind = (get_struct_val(type_ea, 'go_type0.kind') & 0x1f)
                 if typekind == TYPEKIND_VALS['kindStruct'][0]:
-                    create_go_struct(go_type_addr)
+                    create_go_struct(type_ea)
+                    structs_created += 1
+
+
+    runtime_newobject_fn = get_name_ea(BADADDR, 'runtime_newobject')
+    if runtime_newobject_fn == BADADDR:
+        print 'Could not find runtime_newobject, not moving on ' \
+                '(did you run golang_loader_assist.py beforehand?)'
+        return types_parsed, structs_created
+
+    for fn_name in ['runtime_newobject', 'runtime_convT2Enoptr',
+                    'runtime_convT2Eslice']:
+        fn_ea = get_name_ea(BADADDR, fn_name)
+        if fn_ea == BADADDR:
+            print 'could not find function %s, skipping...' % \
+                    fn_name
+            continue
+
+        for newobject_xref in XrefsTo(fn_ea, 0):
+            # find the most recent mov to [rsp] prior to the call
+            # instruction, continue backtracking til you find
+            # the register being assigned an EA to an immediate value
+            #
+            # lea rbx, unk_XXXXXX
+            # ...
+            # mov [rsp], rbx
+            # ...
+            # call runtime_newobject
+            register_n = -1
+            xref_func = get_func(newobject_xref.frm)
+            go_type_addr = BADADDR
+            if not xref_func or xref_func.start_ea == BADADDR:
+                continue
+
+            inst = DecodePreviousInstruction(newobject_xref.frm)
+            while inst and inst.ea != BADADDR:
+                if inst.ea < xref_func.start_ea:
+                    # we went past the actual function
+                    print 'inst went past the function EA, wat..'
+                    break
+
+                if register_n == -1:
+                    # is it the mov [rsp], xxx instruction?
+                    if inst.Op1.specflag1: # SIB byte in effect
+                        regsize = get_dtype_size(inst.Op1.dtype)
+                        base_reg_n = inst.Op1.specflag2 & 7
+                        if idaapi.get_reg_name(base_reg_n, regsize) == 'rsp' \
+                                and inst.Op1.addr == 0:
+                            register_n = inst.Op2.reg
+
+                else:
+                    # is it the lea xxx, unk_XXXXXX instruction?
+                    if inst.Op1.reg == register_n and \
+                            get_byte(inst.ea+1) == 0x8D:
+
+                        # assure second operand is an immediate value
+                        if inst.Op2.type == 2:
+                            go_type_addr = inst.Op2.addr
+                        else:
+                            # it's grabbing it from a struct field
+                            # or something. ignore it.  we're most
+                            # likely in the "runtime" module anyway.
+                            pass
+
+                        break
+                inst = DecodePreviousInstruction(inst.ea)
+
+            if go_type_addr != BADADDR and not ida_bytes.is_struct(
+                                    ida_bytes.get_flags(go_type_addr)):
+                data_name = get_name(go_type_addr)
+                print 'found go reflect data type at %s' % data_name
+                type_struct = declare_and_parse_go_type(go_type_addr)
+                if type_struct != None:
+                    # give it a unique name
+                    success, type_name, type_tag, type_pkgdata = \
+                            create_name(go_type_addr, type_struct)
+                    if success and not is_in_nlist(go_type_addr):
+                        print 'created go_name for %s' % type_name
+                        normalized_name = normalize_name(type_name, go_type_addr)
+                        set_name(go_type_addr, 'go_type__' + normalized_name)
+                        types_parsed += 1
+
+                    # create new IDA structure out of the struct reflect
+                    # data
+                    typekind = (get_struct_val(go_type_addr, 'go_type0.kind') & 0x1f)
+                    if typekind == TYPEKIND_VALS['kindStruct'][0]:
+                        create_go_struct(go_type_addr)
+                        structs_created += 1
+
+    return types_parsed, structs_created
 
 
 def create_go_struct(ea):
@@ -775,7 +824,7 @@ def create_structfields(ea, num_fields):
 
         kind_datatypes = {
             TYPEKIND_VALS['kindSlice'][0]: 'go_slice',
-            TYPEKIND_VALS['kindChan'][0]: 'go_hchan',
+            TYPEKIND_VALS['kindChan'][0]: FF_INT|FF_DATA,
             TYPEKIND_VALS['kindMap'][0]: 'go_hmap',
             TYPEKIND_VALS['kindString'][0]: 'go_string',
             TYPEKIND_VALS['kindInterface'][0]: 'go_interface',
@@ -783,7 +832,6 @@ def create_structfields(ea, num_fields):
             TYPEKIND_VALS['kindFloat64'][0]: FF_DOUBLE,
             TYPEKIND_VALS['kindComplex64'][0]: 'go_complex64',
             TYPEKIND_VALS['kindComplex128'][0]: 'go_complex128',
-            TYPEKIND_VALS['kindPtr'][0]: FF_PTR|FF_DATA|offflag(),
             TYPEKIND_VALS['kindUnsafePointer'][0]: FF_PTR|FF_DATA|offflag()
             }
         fieldsize_to_typesize = {
@@ -818,12 +866,14 @@ def create_structfields(ea, num_fields):
             array_metadata_ea = fieldtype_ea + type_size
             array_len = get_struct_val(array_metadata_ea,
                                        'go_type_metadata_array.len')
+            total_len = array_len
             array_elem_ea = get_struct_val(array_metadata_ea,
                                            'go_type_metadata_array.elem')
             array_elem_kind = (get_struct_val(array_elem_ea,
                                               'go_type0.kind') & 0x1f)
             array_elem_size = get_struct_val(array_elem_ea,
                                              'go_type0.size')
+            full_member_size = array_len
             array_tinfo = ida_typeinf.tinfo_t()
             array_type_decl = ''
             fieldsize_to_decl = {
@@ -837,8 +887,6 @@ def create_structfields(ea, num_fields):
             while True:
                 if array_elem_kind == TYPEKIND_VALS['kindArray'][0]:
                     # traverse through multi-dimensional arrays
-                    # XXX
-                    print '%s: MULLLLLTIBALLLLL' % fieldname_raw_str
                     array_type_decl = ('[%d]' % array_len) + array_type_decl
                     subarray_metadata_ea = array_elem_ea + type_size
                     array_elem_ea = get_struct_val(subarray_metadata_ea,
@@ -849,8 +897,19 @@ def create_structfields(ea, num_fields):
                                                      'go_type0.size')
                     array_len = get_struct_val(subarray_metadata_ea,
                                                'go_type_metadata_array.len')
+                    total_len = total_len * array_len
                     continue
-                if array_elem_kind == TYPEKIND_VALS['kindStruct'][0]:
+                elif array_elem_kind == TYPEKIND_VALS['kindPtr'][0]:
+                    array_type_decl = '*' + array_type_decl
+                    subtype_metadata_ea = array_elem_ea + type_size
+                    array_elem_ea = get_struct_val(subtype_metadata_ea,
+                                                   'go_type_metadata_ptr._elem')
+                    array_elem_kind = (get_struct_val(
+                        array_elem_ea, 'go_type0.kind') & 0x1f)
+                    array_elem_size = get_struct_val(array_elem_ea,
+                                                     'go_type0.size')
+                    continue
+                elif array_elem_kind == TYPEKIND_VALS['kindStruct'][0]:
                     array_struct_mptr, array_struct_name = create_go_struct(array_elem_ea)
                     array_type_decl = array_struct_name + array_type_decl
                     fieldtype_size = array_struct_name
@@ -865,13 +924,14 @@ def create_structfields(ea, num_fields):
                     else:
                         array_type_decl = fieldsize_to_decl[array_elem_size] + \
                                             array_type_decl
+                        fieldtype_size = array_elem_size * total_len
                     break
                 else:
                     array_type_decl = fieldsize_to_decl[array_elem_size] \
                                         + array_type_decl
                     field_type_info = fieldsize_to_typesize[array_elem_size] \
                                         | FF_DATA
-                    fieldtype_size = array_elem_size
+                    fieldtype_size = array_elem_size * total_len
                     break
 
             array_type_decl += '[%d]' % array_len
@@ -1102,8 +1162,10 @@ def main():
         create_imethod_struct(idx, types_start_ea)
 
     print 'renaming and mapping out type structs...'
-    map_type_structs()
+    types_parsed, structs_created = map_type_structs()
 
+    print 'parsed %d types' % types_parsed
+    print 'created %d structs' % structs_created
 
 
 if __name__ == '__main__':
