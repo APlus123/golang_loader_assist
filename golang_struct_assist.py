@@ -587,12 +587,17 @@ def map_type_structs():
         return types_parsed, structs_created
 
     for fn_name in ['runtime_newobject', 'runtime_convT2Enoptr',
-                    'runtime_convT2Eslice']:
+                    'runtime_convT2Eslice', 'runtime_convT2E',
+                    'runtime_convT2E16', 'runtime_convT2E32',
+                    'runtime_convT2E64', 'runtime_convT2Estring']:
         fn_ea = get_name_ea(BADADDR, fn_name)
         if fn_ea == BADADDR:
             LOG.warn('could not find function %s, skipping...',
                      fn_name)
             continue
+
+        LOG.info('parsing go_type structs from references to %s',
+                 fn_name)
 
         for newobject_xref in XrefsTo(fn_ea, 0):
             # find the most recent mov to [rsp] prior to the call
