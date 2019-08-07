@@ -19,6 +19,15 @@ from ida_bytes import get_byte, STRCONV_ESCAPE
 from idaapi import offflag, enum_flag
 import sys
 import string
+import logging
+
+DEBUG = True
+
+logging.basicConfig(
+        level=logging.DEBUG if DEBUG else logging.INFO
+        )
+
+LOG = logging.getLogger('golang_struct_assist')
 
 # this makes the assumption you've ran
 # golang_loader_assist beforehand
@@ -274,17 +283,24 @@ def create_and_populate_struct(struct_name, struct_fields,
     """
     if member_comments:
         if len(member_comments) != len(struct_fields):
-            print 'ERROR: len(member_comments) != len(struct_fields).' \
-                    ' %d is not %d.' % \
-                    (len(member_comments), len(struct_fields))
+            LOG.error(
+                'len(member_comments) != len(struct_fields).' \
+                       ' %d is not %d.',
+                len(member_comments), len(struct_fields)
+                )
+
     if member_tinfos:
         if len(member_tinfos) != len(struct_fields):
-            print 'ERROR: len(member_tinfos) != len(struct_fields).' \
-                    ' %d is not %d.' % \
-                    (len(member_tinfos), len(struct_fields))
+            LOG.error(
+                'len(member_tinfos) != len(struct_fields).' \
+                       ' %d is not %d.' % \
+                len(member_tinfos), len(struct_fields)
+                )
+
     existing_struct = ida_struct.get_struc_id(struct_name)
     if existing_struct != BADADDR:
-        print 'struct %s already exists, skipping..' % struct_name
+        LOG.info('struct %s already exists, skipping..',
+                 struct_name)
         return
 
     new_struct = ida_struct.add_struc(BADADDR, struct_name)
@@ -294,16 +310,17 @@ def create_and_populate_struct(struct_name, struct_fields,
             member_offset in struct_fields:
         if member_offset is None:
             member_offset = BADADDR
-        print 'adding struct field %s:%s:%s' % \
-                (struct_name, name, member_offset)
+        LOG.debug('adding struct field %s:%s:%s',
+                  struct_name, name, member_offset)
         if type(struct_name_or_size) in (str,unicode):
             # plaster in an existing struct
             existing_struct_field = ida_struct.get_struc_id(
                                         struct_name_or_size)
             if existing_struct_field == BADADDR:
-                print 'ERROR: trying to add struct type %s ' \
-                        'as field before it is declared, ' \
-                        'cannot continue' % struct_name_or_size
+                LOG.error('trying to add struct type %s ' \
+                          'as field before it is declared, ' \
+                          'cannot continue',
+                          struct_name_or_size)
                 break
             existing_sptr = ida_struct.get_struc(existing_struct_field)
             existing_size = ida_struct.get_struc_size(existing_sptr)
@@ -318,10 +335,10 @@ def create_and_populate_struct(struct_name, struct_fields,
         else:
             if enum_ptr:
                 existing_enum = ida_enum.get_enum(enum_ptr)
-                print 'existing_enum: %x' % existing_enum
+                LOG.debug('existing_enum: %x', existing_enum)
                 if existing_enum == BADADDR:
-                    print 'ERROR: enum %s does not exist, ' \
-                            'cannot continue' % enum_ptr
+                    LOG.error('enum %s does not exist, ' \
+                              'cannot continue', enum_ptr)
                     break
                 opinfo = idaapi.opinfo_t()
                 opinfo.ec.tid = existing_enum
@@ -455,7 +472,8 @@ def populate_builtin_bitfields():
     for bf_name, (bf_size, bf_values) in GO_BUILTIN_BITFIELDS.items():
         existing_enum = ida_enum.get_enum(bf_name)
         if existing_enum != BADADDR:
-            print 'bitfield %s already exists, skipping..' % bf_name
+            LOG.info('bitfield %s already exists, skipping..',
+                     bf_name)
             continue
         new_bf_id = ida_enum.add_enum(BADADDR, bf_name, 0)
         ida_enum.set_enum_bf(new_bf_id, True)
@@ -464,8 +482,8 @@ def populate_builtin_bitfields():
             ret = ida_enum.add_enum_member(new_bf_id, name,
                                            enum_val, bf_mask)
             if ret != 0:
-                print 'Could not add %s bitfield value to %s ' \
-                        '(error code %d)' % (name, bf_name, ret)
+                LOG.error('Could not add %s bitfield value to %s ' \
+                          '(error code %d)', name, bf_name, ret)
                 break
 
 
@@ -542,14 +560,14 @@ def map_type_structs():
         type_ea = rodata_start_ea + \
                 ida_bytes.get_dword(typelink_start_ea + (idx*4))
         if not ida_bytes.is_struct(ida_bytes.get_flags(type_ea)):
-            print 'parsing go_type data at %x' % type_ea
+            LOG.debug('parsing go_type data at %x', type_ea)
             type_struct = declare_and_parse_go_type(type_ea)
             if type_struct != None:
                 # give it a unique name
                 success, type_name, type_tag, type_pkgdata = \
                         create_name(type_ea, type_struct)
                 if success and not is_in_nlist(type_ea):
-                    print 'created go_name for %s' % type_name
+                    LOG.debug('created go_name for %s', type_name)
                     normalized_name = normalize_name(type_name, type_ea)
                     set_name(type_ea, 'go_type__' + normalized_name)
                     types_parsed += 1
@@ -564,16 +582,16 @@ def map_type_structs():
 
     runtime_newobject_fn = get_name_ea(BADADDR, 'runtime_newobject')
     if runtime_newobject_fn == BADADDR:
-        print 'Could not find runtime_newobject, not moving on ' \
-                '(did you run golang_loader_assist.py beforehand?)'
+        LOG.error('Could not find runtime_newobject, not moving on ' \
+                  '(did you run golang_loader_assist.py beforehand?)')
         return types_parsed, structs_created
 
     for fn_name in ['runtime_newobject', 'runtime_convT2Enoptr',
                     'runtime_convT2Eslice']:
         fn_ea = get_name_ea(BADADDR, fn_name)
         if fn_ea == BADADDR:
-            print 'could not find function %s, skipping...' % \
-                    fn_name
+            LOG.warn('could not find function %s, skipping...',
+                     fn_name)
             continue
 
         for newobject_xref in XrefsTo(fn_ea, 0):
@@ -596,7 +614,7 @@ def map_type_structs():
             while inst and inst.ea != BADADDR:
                 if inst.ea < xref_func.start_ea:
                     # we went past the actual function
-                    print 'inst went past the function EA, wat..'
+                    LOG.debug('inst went past the function EA, wat..')
                     break
 
                 if register_n == -1:
@@ -628,14 +646,14 @@ def map_type_structs():
             if go_type_addr != BADADDR and not ida_bytes.is_struct(
                                     ida_bytes.get_flags(go_type_addr)):
                 data_name = get_name(go_type_addr)
-                print 'found go reflect data type at %s' % data_name
+                LOG.debug('found go reflect data type at %s', data_name)
                 type_struct = declare_and_parse_go_type(go_type_addr)
                 if type_struct != None:
                     # give it a unique name
                     success, type_name, type_tag, type_pkgdata = \
                             create_name(go_type_addr, type_struct)
                     if success and not is_in_nlist(go_type_addr):
-                        print 'created go_name for %s' % type_name
+                        LOG.debug('created go_name for %s', type_name)
                         normalized_name = normalize_name(type_name, go_type_addr)
                         set_name(go_type_addr, 'go_type__' + normalized_name)
                         types_parsed += 1
@@ -679,16 +697,16 @@ def create_go_struct(ea):
     fields_ea = type_kind_ea + fields_soff
     num_fields = get_struct_val(fields_ea, 'go_array.len')
     new_struct_mptr = None
-    print 'struct %s at 0x%x has %d fields' % \
-            (struct_name, fields_ea, num_fields)
+    LOG.debug('struct %s at 0x%x has %d fields',
+              struct_name, fields_ea, num_fields)
     if num_fields > 0:
         fields_ptr_ea = get_struct_val(fields_ea,
                                        'go_array.data')
-        print 'creating %d structfields at 0x%x' % \
-                (num_fields, fields_ptr_ea)
+        LOG.debug('creating %d structfields at 0x%x',
+                  num_fields, fields_ptr_ea)
         field_list, tag_list, tinfo_list = \
                 create_structfields(fields_ptr_ea, num_fields)
-        print '0x%x: fields: %s' % (ea, field_list)
+        LOG.debug('0x%x: fields: %s', ea, field_list)
         new_struct_mptr = create_and_populate_struct(
                 struct_name, field_list,
                 member_comments=tag_list,
@@ -709,8 +727,8 @@ def declare_and_parse_go_type(ea):
         if ea >= md_soff and ea < md_eoff:
             type_idx = idx
     if type_idx == -1:
-        print 'ERROR: could not determine correct go_type struct ' \
-                'at 0x%x' % ea
+        LOG.error('could not determine correct go_type struct ' \
+                  'at 0x%x', ea)
         return None
 
     type_struct_name = 'go_type%d' % type_idx
@@ -719,14 +737,14 @@ def declare_and_parse_go_type(ea):
     type_struct_size = ida_struct.get_struc_size(type_struct)
 
     if not ida_bytes.del_items(ea, 0, type_struct_size):
-        print 'ERROR: could not undefine bytes for go_type ' \
-                'at 0x%x' % ea
+        LOG.error('could not undefine bytes for go_type ' \
+                  'at 0x%x', ea)
         return None
 
     if not ida_bytes.create_struct(ea, type_struct_size,
                                    type_struct.id):
-        print 'ERROR: could not create go_type%d struct ' \
-                'at 0x%x' % (type_idx, ea)
+        LOG.error('could not create go_type%d struct ' \
+                  'at 0x%x', type_idx, ea)
         return None
 
     type_kind = (get_struct_val(ea, 'go_type0.kind') & 0x1f)
@@ -748,21 +766,23 @@ def declare_and_parse_go_type(ea):
         type_kind_name = 'go_type_metadata_struct'
 
     if type_kind_name:
-        print 'adding %s at 0x%x' % (type_kind_name, type_kind_ea)
+        LOG.debug('adding %s at 0x%x', type_kind_name, type_kind_ea)
         type_kind_id = ida_struct.get_struc_id(type_kind_name)
         type_kind_sptr = ida_struct.get_struc(type_kind_id)
         type_kind_size = ida_struct.get_struc_size(type_kind_sptr)
         if type_kind_size <= 0:
-            print 'ERROR: could not determine %s struct size ' \
-                    'at 0x%x (%s)' % (type_kind_id, type_kind_ea)
+            LOG.error('could not determine %s struct size ' \
+                      'at 0x%x (%s)', type_kind_id, type_kind_ea)
             return type_struct
-        print 'adding go_type struct metadata %s of %d bytes ' \
-                'at 0x%x' % (type_kind_name, type_kind_size, type_kind_ea)
+        LOG.debug('adding go_type struct metadata %s of %d bytes ' \
+                  'at 0x%x',
+                  type_kind_name, type_kind_size, type_kind_ea)
         ida_bytes.del_items(type_kind_ea, type_kind_size)
         if not ida_bytes.create_struct(type_kind_ea, type_kind_size,
                 type_kind_id):
-            print 'ERROR: could not declare typekind %s struct at ' \
-                    '0x%x' % (type_kind_name, type_kind_ea)
+            LOG.error('could not declare typekind %s struct at ' \
+                      '0x%x',
+                      type_kind_name, type_kind_ea)
 
     return type_struct
 
@@ -852,13 +872,13 @@ def create_structfields(ea, num_fields):
         if fieldname_raw_str in invalid_names:
             fieldname_raw_str = '_' + fieldname_raw_str
 
-        print 'field %s is type %d' % \
-                (fieldname_raw_str, fieldtype_kind)
+        LOG.debug('field %s is type %d',
+                  fieldname_raw_str, fieldtype_kind)
 
         # TODO: kindPtr pointing to correct structure
         if fieldtype_kind == TYPEKIND_VALS['kindArray'][0]:
-            print 'creating new array at %x for field %s' % \
-                    (fieldtype_ea, fieldname_raw_str)
+            LOG.debug('creating new array at %x for field %s',
+                      fieldtype_ea, fieldname_raw_str)
             # create a go struct of the type the array points to,
             # if needed.
             type_size = ida_struct.get_struc_size(
@@ -937,16 +957,16 @@ def create_structfields(ea, num_fields):
             array_type_decl += '[%d]' % array_len
 
             array_type_decl += ';'
-            print 'array_type_decl for %s is %s' % \
-                    (fieldname_raw_str, array_type_decl)
+            LOG.debug('array_type_decl for %s is %s',
+                      fieldname_raw_str, array_type_decl)
             ida_typeinf.parse_decl(array_tinfo,
                                    idaapi.cvar.idati,
                                    array_type_decl,
                                    ida_typeinf.PT_TYP)
             field_tinfo = array_tinfo
         elif fieldtype_kind == TYPEKIND_VALS['kindStruct'][0]:
-            print 'creating new struct at %x for field %s' % \
-                    (fieldtype_ea, fieldname_raw_str)
+            LOG.debug('creating new struct at %x for field %s',
+                      fieldtype_ea, fieldname_raw_str)
             child_struct_mptr, child_struct_name = create_go_struct(fieldtype_ea)
             fieldtype_size = child_struct_name
             field_type_info = None
@@ -961,7 +981,7 @@ def create_structfields(ea, num_fields):
             if fieldtype_size not in fieldsize_to_typesize.keys():
                 msg = '%s (0x%x, %d bytes) not in fieldtype_size' % \
                         (fieldname_raw_str, fieldtype_ea, fieldtype_size)
-                print 'ERROR: ' + msg
+                LOG.exception(msg)
                 raise Exception(msg)
             field_type_info = fieldsize_to_typesize[fieldtype_size] \
                                 | FF_DATA
@@ -979,7 +999,7 @@ def create_structfields(ea, num_fields):
 
 def populate_builtin_structs():
     for struct_name, struct_data in GO_BUILTIN_STRUCTS:
-        print 'Adding struct %s...' % struct_name
+        LOG.info('Adding struct %s...', struct_name)
         create_and_populate_struct(struct_name, struct_data)
 
 
@@ -1019,22 +1039,22 @@ def create_name(type_ea, type_struct):
         str_value = str_value[1:]
 
     if not success:
-        print 'ERROR: could not get name info at %x' % \
-                name_ea
+        LOG.error('could not get name info at %x',
+                  name_ea)
         return (False, None, None, None)
 
     name_struct_len = 3 + len(str_value)
-    print 'creating go_name of size %d at 0x%x' % \
-            (name_struct_len, name_ea)
+    LOG.debug('creating go_name of size %d at 0x%x',
+              name_struct_len, name_ea)
 
     if not ida_bytes.del_items(name_ea, 0, name_struct_len):
-        print 'ERROR: failed to undefine data for go_name ' \
-                'at 0x%x' % name_ea
+        LOG.error('failed to undefine data for go_name ' \
+                  'at 0x%x', name_ea)
         return (False, None, None, None)
     if not ida_bytes.create_struct(name_ea, name_struct_len,
                                    name_struct_id):
-        print 'ERROR: failed to create go_name struct at ' \
-                '0x%x' % name_ea
+        LOG.error('failed to create go_name struct at ' \
+                  '0x%x', name_ea)
         return (False, None, None, None)
 
     set_name(name_ea, 'go_name__' + normalize_name(str_value, type_ea))
@@ -1061,9 +1081,10 @@ def get_name_info(name_ea):
                 ((ida_bytes.get_byte(tag_ea) << 8) & 0xffff) | \
                  (ida_bytes.get_byte(tag_ea + 1) & 0xffff)
         if tag_len > 0:
-            print '0x%x contains %d byte long tag' % (tag_ea, tag_len)
+            LOG.debug('0x%x contains %d byte long tag',
+                      tag_ea, tag_len)
             tag_value = ida_bytes.get_strlit_contents(tag_ea+2, tag_len, 0)
-            print 'tag: %s' % tag_value
+            LOG.debug('tag: %s', tag_value)
 
     # TODO: pkgPath
 
@@ -1109,16 +1130,16 @@ def create_imethod_struct(idx, types_ea):
 
 
 def main():
-    print 'populating built-in bitfields...'
+    LOG.info('populating built-in bitfields...')
     populate_builtin_bitfields()
 
-    print 'populating built-in runtime structs...'
+    LOG.info('populating built-in runtime structs...')
     populate_builtin_structs()
 
-    print 'finding and declaring moduledata structs...'
+    LOG.info('finding and declaring moduledata structs...')
     moduledata_ea = find_runtime_firstmoduledata()
     if moduledata_ea == BADADDR:
-        print 'ERROR: could not find runtime.firstmoduledata...'
+        LOG.error('could not find runtime.firstmoduledata...')
         return
 
     # enumerate all moduledata structs in the noptrdata section
@@ -1133,16 +1154,16 @@ def main():
                                     'go_runtime_moduledata.etypes')[0].soff
 
         while moduledata_ea != BADADDR:
-            print 'found moduledata at 0x%x' % moduledata_ea
+            LOG.info('found moduledata at 0x%x', moduledata_ea)
             if not ida_bytes.del_items(moduledata_ea, 0,
                                        moduledata_size):
-                print 'ERROR: could not undefine byte range for ' \
-                        'moduledata at 0x%x' % moduledata_ea
+                LOG.error('could not undefine byte range for ' \
+                          'moduledata at 0x%x', moduledata_ea)
                 return
             if not ida_bytes.create_struct(moduledata_ea, moduledata_size,
                                            moduledata_struct_id):
-                print 'ERROR: could not create moduledata struct at ' \
-                        '0x%x' % moduledata_ea
+                LOG.error('could not create moduledata struct at ' \
+                          '0x%x', moduledata_ea)
                 return
 
             types_offset = ida_bytes.get_qword(
@@ -1157,15 +1178,17 @@ def main():
     # The name and type offsets in the go_type struct rely on that
     # particular offset
     for idx, (types_start_ea, _) in enumerate(GO_TYPES_RANGES):
-        print 'Creating type struct (types offset: 0x%x)' % types_start_ea
+        LOG.info('Creating go_type struct out of offset 0x%x',
+                 types_start_ea)
         create_go_type_struct(idx, types_start_ea)
         create_imethod_struct(idx, types_start_ea)
 
-    print 'renaming and mapping out type structs...'
+    LOG.info('renaming and mapping out type structs...')
     types_parsed, structs_created = map_type_structs()
 
-    print 'parsed %d types' % types_parsed
-    print 'created %d structs' % structs_created
+    # TODO: painfully miscounted
+    LOG.info('parsed %d types', types_parsed)
+    LOG.info('created %d structs', structs_created)
 
 
 if __name__ == '__main__':
