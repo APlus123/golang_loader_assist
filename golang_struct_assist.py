@@ -1,8 +1,7 @@
-__author__ = "Current Resident"
-__copyright__ = "No"
+__author__ = "spigwitmer"
+__copyright__ = __author__
 __license__ = "GPL"
 __version__ = "0.1"
-__email__ = ["root@127.0.0.1"]
 
 from idautils import *
 from idc import *
@@ -21,7 +20,7 @@ import sys
 import string
 import logging
 
-DEBUG = True
+DEBUG = False
 
 logging.basicConfig(
         level=logging.DEBUG if DEBUG else logging.INFO
